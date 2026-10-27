@@ -532,3 +532,14 @@ WHERE
 drop table s;
 drop table table0_hash_pk_parts_1_bigint;
 drop table ff;
+
+--echo #
+--echo # https://github.com/oceanbase/seekdb/issues/1477
+--echo # IFNULL with a boolean scalar subquery as the first argument and a
+--echo # double-negated LIKE as the second argument failed with
+--echo # ERROR 4016 (OB_ERR_UNEXPECTED) during type re-deduction in query
+--echo # rewrite: the scalar subquery ref already carried an implicit cast
+--echo # while the merged result type of IFNULL had become wider.
+SELECT 1 FROM dual WHERE IFNULL((SELECT FALSE), !(!(1 LIKE "x")));
+SELECT 1 FROM dual WHERE IFNULL((SELECT TRUE), !(!(1 LIKE "x")));
+SELECT IFNULL((SELECT NULL), !(!(1 LIKE "x"))) IS NULL FROM dual;
