@@ -101,6 +101,8 @@ typedef struct ObJsonTableDef {
   common::ObSEArray<ObString, 16, common::ModulePageAllocator, true> namespace_arr_;
 } ObJsonTableDef;
 
+class ObFileTableDef;
+
 struct ObValuesTableDef {
   ObValuesTableDef() : start_param_idx_(-1), end_param_idx_(-1), column_cnt_(0), row_cnt_(0),
                        access_type_(ACCESS_EXPR), is_const_(false) {}
@@ -155,6 +157,7 @@ struct TableItem
     json_table_def_ = nullptr;
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
+    file_def_ = NULL;
     sample_info_ = nullptr;
   }
 
@@ -303,6 +306,7 @@ struct TableItem
   ObJsonTableDef *json_table_def_;
   // values table
   ObValuesTableDef *values_table_def_;
+  ObFileTableDef *file_def_; // file sql table metadata, owned by the resolver allocator
   // sample scan infos
   SampleInfo *sample_info_;
 };

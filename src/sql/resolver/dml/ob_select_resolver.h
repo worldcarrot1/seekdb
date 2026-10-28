@@ -164,6 +164,7 @@ protected:
 
   //resolve select into
   int resolve_into_clause(const ParseNode *node);
+  int resolve_copy_into_file(const ParseNode *node, ObSelectIntoItem &into_item);
   int resolve_into_const_node(const ParseNode *node, ObObj &obj);
   int resolve_into_field_node(const ParseNode *node, ObSelectIntoItem &into_item);
   int resolve_into_line_node(const ParseNode *node, ObSelectIntoItem &into_item);
@@ -351,6 +352,20 @@ private:
 };
 
 
+
+// DESCRIBE/DESC of a SELECT: shows the resolved output columns without running the query.
+class ObDescribeSelectResolver : public ObSelectResolver
+{
+public:
+  explicit ObDescribeSelectResolver(ObResolverParams &params) : ObSelectResolver(params) {}
+  virtual ~ObDescribeSelectResolver() {}
+  virtual int resolve(const ParseNode &parse_tree);
+  int build_describe_row(const common::ObString &col_name,
+                         const common::ObString &col_type,
+                         const bool nullable,
+                         common::ObIArray<common::ObSEArray<ObFileCell, 8> > &rows);
+  DISALLOW_COPY_AND_ASSIGN(ObDescribeSelectResolver);
+};
 
 } // end namespace sql
 } // end namespace oceanbase

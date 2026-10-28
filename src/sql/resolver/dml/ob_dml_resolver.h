@@ -17,6 +17,7 @@
 #ifndef OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
 #define OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
 #include "sql/resolver/dml/ob_dml_stmt.h"
+#include "sql/engine/basic/ob_file_scan_utils.h"
 #include "sql/resolver/dml/ob_column_namespace_checker.h"
 #include "sql/resolver/ob_stmt_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_resolver_impl.h"
@@ -226,6 +227,15 @@ public:
                                 ObString& path_str,
                                 MulModeTableType table_type);
   int resolve_str_const(const ParseNode &parse_tree, ObString& path_str);
+  int resolve_file_sql_item(const ParseNode &table_node, TableItem *&table_item);
+  int gen_file_table_column_items(const common::ObIArray<common::ObString> &column_names,
+                                  TableItem &table_item);
+  int build_file_values_table_item(const common::ObIArray<common::ObString> &column_names,
+                                   const common::ObIArray<ObFileTypeClass> &column_classes,
+                                   const common::ObIArray<common::ObSEArray<ObFileCell, 8> > &cells,
+                                   const common::ObString &alias_name,
+                                   ObFileTableDef *file_def,
+                                   TableItem *&table_item);
   int resolve_json_table_column_name_and_path(const ParseNode *name_node,
                                            const ParseNode *path_node,
                                            ObIAllocator* allocator,

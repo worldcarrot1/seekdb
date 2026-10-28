@@ -38,7 +38,8 @@ OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
-    external_properties_);
+    external_properties_,
+    header_str_);
 
 
 int ObSelectIntoOp::inner_open()
@@ -84,6 +85,7 @@ int ObSelectIntoOp::init_csv_env()
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *session = NULL;
   set_csv_format_options();
+  header_written_ = false;
   if (OB_ISNULL(session = ctx_.get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_env_common())) {
@@ -953,6 +955,16 @@ int ObSelectIntoOp::into_outfile(ObExternalFileWriter *data_writer)
   if (OB_ISNULL(csv_data_writer = static_cast<ObCsvFileWriter *>(data_writer))) {
     ret = OB_ERR_UNEXPECTED;
   }
+  if (OB_SUCC(ret) && !header_written_ && !MY_SPEC.header_str_.str_.empty()) {
+    ObObj header_obj;
+    header_obj.set_varchar(MY_SPEC.header_str_.str_);
+    header_obj.set_collation_type(cs_type_);
+    OZ(write_obj_to_file(header_obj, *csv_data_writer));
+    OZ(write_obj_to_file(line_str_, *csv_data_writer));
+    if (OB_SUCC(ret)) {
+      header_written_ = true;
+    }
+  }
   for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
     if (OB_ISNULL(select_exprs.at(i))) {
       ret = OB_ERR_UNEXPECTED;
@@ -995,6 +1007,21 @@ int ObSelectIntoOp::into_outfile_batch_csv(const ObBatchRows &brs, ObExternalFil
   for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
     if (OB_FAIL(select_exprs.at(i)->eval_batch(eval_ctx_, *brs.skip_, brs.size_))) {
     } else if (OB_FAIL(datum_vectors.push_back(select_exprs.at(i)->locate_expr_datumvector(eval_ctx_)))) {
+    }
+  }
+  if (OB_SUCC(ret) && !header_written_ && !MY_SPEC.header_str_.str_.empty()) {
+    ObCsvFileWriter *hdr_writer = static_cast<ObCsvFileWriter *>(data_writer);
+    if (OB_ISNULL(hdr_writer)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      ObObj header_obj;
+      header_obj.set_varchar(MY_SPEC.header_str_.str_);
+      header_obj.set_collation_type(cs_type_);
+      OZ(write_obj_to_file(header_obj, *hdr_writer));
+      OZ(write_obj_to_file(line_str_, *hdr_writer));
+      if (OB_SUCC(ret)) {
+        header_written_ = true;
+      }
     }
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < brs.size_; ++i) {
