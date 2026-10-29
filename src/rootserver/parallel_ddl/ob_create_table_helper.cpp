@@ -23,6 +23,7 @@
 #include "rootserver/freeze/ob_major_freeze_helper.h"
 #include "sql/resolver/ddl/ob_index_builder_util.h"
 #include "share/schema/ob_table_sql_service.h"
+#include "share/ob_ai_column_meta_operator.h"
 #include "query/vector/ob_vector_index_util.h"
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -878,6 +879,14 @@ int ObCreateTableHelper::clean_on_fail_commit_()
 int ObCreateTableHelper::operation_before_commit_() {
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_inner_stat_())) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < new_tables_.count(); ++i) {
+      const share::schema::ObTableSchema &table = new_tables_.at(i);
+      if (table.is_user_table()
+          && OB_FAIL(share::ObAiColumnMetaOperator::persist_table_ai_columns(table, get_trans_()))) {
+        LOG_WARN("failed to persist ai column meta", K(ret), K(table.get_table_id()));
+      }
+    }
   }
   return ret;
 }

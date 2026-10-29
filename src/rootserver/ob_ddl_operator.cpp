@@ -16,6 +16,9 @@
 
 #define USING_LOG_PREFIX RS
 
+#include "share/ob_ai_column_common.h"
+#include "share/ob_ai_column_meta_operator.h"
+#include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "ob_ddl_operator.h"
 #include "share/ob_autoincrement_service.h"
 #include "rootserver/ob_dependency_ddl_helper.h"
@@ -2861,6 +2864,12 @@ int ObDDLOperator::drop_table(
   } else {
     if (OB_FAIL(drop_tablet_of_table(table_schema, trans))) {
     }
+  }
+
+  if (OB_SUCC(ret) && table_schema.is_user_table()
+      && OB_FAIL(share::ObAiColumnMetaOperator::delete_table_ai_meta(
+              table_schema.get_table_id(), trans))) {
+    LOG_WARN("failed to delete ai column meta rows", K(ret), K(table_schema.get_table_id()));
   }
 
   if (OB_SUCC(ret)) {

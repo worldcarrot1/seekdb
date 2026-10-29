@@ -403,6 +403,7 @@ inline int fill_ai_hidden_column_schema(const common::ObString &base_name,
     column.set_next_column_id(UINT64_MAX);
     if (AI_COLUMN_SPEC_FLAG == flag) {
       column.set_data_type(ObVarcharType);
+      column.set_charset_type(CHARSET_BINARY);
       column.set_collation_type(CS_TYPE_BINARY);
       column.set_data_length(4096);
       column.set_nullable(true);
@@ -410,6 +411,7 @@ inline int fill_ai_hidden_column_schema(const common::ObString &base_name,
       common::ObObj default_value;
       default_value.set_int(0);
       column.set_data_type(ObIntType);
+      column.set_charset_type(CHARSET_BINARY);
       column.set_collation_type(CS_TYPE_BINARY);
       column.set_data_length(0);
       column.set_nullable(false);

@@ -557,6 +557,7 @@ SHARE_STANDALONE_SOURCES = [
     struct(path = "src/share/geo/ob_geo_func_within1.cpp", language = "c++", kind = "source"),
     struct(path = "src/share/geo/ob_geo_func_within2.cpp", language = "c++", kind = "source"),
     struct(path = "src/share/ob_ddl_args.cpp", language = "c++", kind = "source"),
+    struct(path = "src/share/ob_ai_column_meta_operator.cpp", language = "c++", kind = "source"),
     struct(path = "src/share/ob_local_device.cpp", language = "c++", kind = "source"),
     struct(path = "src/share/ob_lonely_table_clean_rpc_struct.cpp", language = "c++", kind = "source"),
     struct(path = "src/share/ob_rpc_struct.cpp", language = "c++", kind = "source"),

@@ -27,6 +27,10 @@
 #include "query/session/ob_inner_sql_connection_access.h"
 #include "share/ob_ddl_common.h"
 #include "share/inner_table/ob_inner_table_schema_constants.h"
+#include "share/ob_dml_sql_splicer.h"
+#include "share/ob_ai_column_common.h"
+#include "share/ob_ai_column_meta_operator.h"
+
 #include "sql/printer/ob_schema_printer.h"
 #include "share/autoincrement/ob_i_tablet_autoincrement_admin.h"
 #include "storage/blocksstable/index_block/ob_index_block_util.h"
@@ -1391,6 +1395,11 @@ int ObDDLService::create_tables_in_trans(const bool if_not_exist,
                                                      trans,
                                                      0 == i ? &tmp_ddl_stmt_str : NULL,
                                                      i == table_schemas.count() - 1))) {
+        } else if (table_schema.is_user_table()
+                   && OB_FAIL(share::ObAiColumnMetaOperator::persist_table_ai_columns(
+                          table_schema, trans))) {
+          LOG_WARN("failed to persist ai column meta", K(ret),
+                   K(table_schema.get_table_id()));
         } else if (table_schema.is_view_table() && dep_infos != nullptr && 0 == i) {
           for (int64_t i = 0 ; OB_SUCC(ret) && i < dep_infos->count(); ++i) {
             ObDependencyInfo dep;
@@ -7827,6 +7836,14 @@ int ObDDLService::add_new_column_to_table_schema(
       if (update_inner_table) {
         if (OB_FAIL(ddl_operator->insert_single_column(*trans,
                 new_table_schema, alter_column_schema))) {
+        }
+      }
+
+      if (OB_SUCC(ret) && update_inner_table && alter_column_schema.is_ai_spec_column()
+          && share::is_ai_column_spec_comment(alter_column_schema.get_comment_str())) {
+        if (OB_FAIL(share::ObAiColumnMetaOperator::persist_alter_add_ai_column(
+                new_table_schema, alter_column_schema, *trans))) {
+          LOG_WARN("failed to persist ai column meta", K(ret));
         }
       }
     }
