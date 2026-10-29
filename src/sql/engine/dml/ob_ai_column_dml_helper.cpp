@@ -121,9 +121,9 @@ int ObAiColumnDmlHelper::build_rowkey_predicate(
   ObSEArray<uint64_t, 4> rowkey_ids;
   int64_t pos = 0;
   pred.reset();
-  if (OB_ISNULL(buf) || buf_len <= 0 || row.count() != das_column_ids.count()) {
+  if (OB_ISNULL(buf) || buf_len <= 0) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arguments", K(ret), K(row.count()), K(das_column_ids.count()));
+    LOG_WARN("invalid arguments", K(ret), K(buf_len));
   } else if (OB_FAIL(table_schema.get_rowkey_column_ids(rowkey_ids))) {
     LOG_WARN("failed to get rowkey column ids", K(ret));
   } else if (rowkey_ids.empty()) {
@@ -360,11 +360,12 @@ int ObAiColumnDmlHelper::after_delete_row(
 }
 
 // The main update of this transaction already wrote the row once, so the
-// invalidation must not look like a second plain UPDATE on the same row (the
-// memtable defensive check rejects that). Re-issuing the row as
-// insert ... on duplicate key update <result cols> = NULL carries the
-// insert-up write flag, which the check explicitly tolerates, and the rowkey
-// values locate the row without a predicate.
+// invalidation must not look like a second plain UPDATE on the same row:
+// the storage layer's sequence-set check reports a fatal multiple-update
+// violation for that. Re-issuing the row as insert ... on duplicate key
+// update <result cols> = NULL carries the insert-up write flag, which the
+// check explicitly tolerates, and the rowkey values locate the row without
+// a predicate.
 int ObAiColumnDmlHelper::gen_invalidate_sql(
     const ObString &db_name,
     const ObString &tbl_name,
@@ -380,16 +381,17 @@ int ObAiColumnDmlHelper::gen_invalidate_sql(
   int ret = OB_SUCCESS;
   int64_t pos = 0;
   int64_t emitted = 0;
-  if (OB_ISNULL(buf) || buf_len <= 0 || row.count() != das_column_ids.count()) {
+  if (OB_ISNULL(buf) || buf_len <= 0) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arguments", K(ret), K(row.count()), K(das_column_ids.count()));
+    LOG_WARN("invalid arguments", K(ret), K(buf_len));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "insert into `%.*s`.`%.*s` (",
              db_name.length(), db_name.ptr(), tbl_name.length(), tbl_name.ptr()))) {
     LOG_WARN("failed to start invalidate sql", K(ret));
   }
   // column list: everything the DAS row carries except hidden/generated cols
   for (int64_t i = 0; OB_SUCC(ret) && i < row.count(); ++i) {
-    const ObColumnSchemaV2 *col = table_schema.get_column_schema(das_column_ids.at(i));
+    const ObColumnSchemaV2 *col = i < das_column_ids.count()
+        ? table_schema.get_column_schema(das_column_ids.at(i)) : NULL;
     if (OB_ISNULL(col) || col->is_hidden() || col->is_generated_column()) {
       // not addressable through an insert
     } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%s`%.*s`",
@@ -409,7 +411,8 @@ int ObAiColumnDmlHelper::gen_invalidate_sql(
   }
   int64_t value_cnt = 0;
   for (int64_t i = 0; OB_SUCC(ret) && i < row.count(); ++i) {
-    const ObColumnSchemaV2 *col = table_schema.get_column_schema(das_column_ids.at(i));
+    const ObColumnSchemaV2 *col = i < das_column_ids.count()
+        ? table_schema.get_column_schema(das_column_ids.at(i)) : NULL;
     if (OB_ISNULL(col) || col->is_hidden() || col->is_generated_column()) {
       // keep aligned with the column list pass
     } else {
@@ -597,7 +600,7 @@ int ObAiColumnDmlHelper::after_update_row(
     if (OB_FAIL(ret) || hit_entries.empty()) {
       // no async AI result of this row is affected by the update
     } else if (OB_FAIL(build_rowkey_predicate(*table_schema, upd_ctdef.new_row_,
-               upd_ctdef.dupd_ctdef_.column_ids_, dml_rtctx.get_eval_ctx(),
+               upd_ctdef.column_ids_, dml_rtctx.get_eval_ctx(),
                dml_op.get_obj_print_params(), pred_buf, sizeof(pred_buf), pred))) {
       LOG_WARN("failed to build rowkey predicate", K(ret));
     } else if (OB_FAIL(dml_op.open_inner_conn())) {
@@ -628,7 +631,7 @@ int ObAiColumnDmlHelper::after_update_row(
                                               table_schema->get_table_name_str(),
                                               hit_entries, *table_schema,
                                               upd_ctdef.new_row_,
-                                              upd_ctdef.dupd_ctdef_.column_ids_,
+                                              upd_ctdef.column_ids_,
                                               dml_rtctx.get_eval_ctx(),
                                               dml_op.get_obj_print_params(),
                                               sql_buf, sizeof(sql_buf)))) {

@@ -26,7 +26,6 @@ namespace
 const int64_t WORKER_HTTP_TIMEOUT_SEC = 30;
 const int64_t WORKER_CLAIM_LEASE_SEC = 300;
 const int64_t WORKER_RETRY_BACKOFF_US = 800 * 1000L;
-const int64_t WORKER_VECTOR_HOLD_US = 24L * 3600 * 1000 * 1000;
 
 // deep copy into the cycle arena; structs below only keep ObString views so
 // they stay assignable inside ObSEArray
@@ -401,6 +400,25 @@ int call_ai(ObIAllocator &alloc, const ObString &model_name, const ObString &res
     LOG_WARN("ai endpoint resolver unavailable", K(ret));
   } else if (OB_FAIL(resolver->resolve_by_model_name(model_name, alloc, endpoint))) {
     LOG_WARN("failed to resolve ai model endpoint", K(ret), K(model_name));
+  } else if (0 == result_type.case_compare("vector")) {
+    // embeddings ride the native dense embedding client; the result text is a
+    // JSON array like [0,0,0,0], which the vector column accepts as a literal
+    ObAIFuncExprInfo *info = NULL;
+    if (OB_FAIL(ObAIFuncUtils::get_ai_func_info(alloc, model_name, info))) {
+      LOG_WARN("failed to get ai func info", K(ret), K(model_name));
+    } else if (OB_ISNULL(info)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null ai func info", K(ret), K(model_name));
+    } else {
+      ObAIFuncModel model(alloc, *info, endpoint);
+      ObString content_copy = user_text;
+      ObString embed_str;
+      if (OB_FAIL(model.call_dense_embedding(content_copy, NULL, embed_str))) {
+        LOG_WARN("failed to call dense embedding", K(ret), K(model_name));
+      } else if (OB_FAIL(arena_dup(alloc, embed_str, result_value))) {
+        LOG_WARN("failed to copy embedding result", K(ret));
+      }
+    }
   } else {
     ObString access_key;
     ObArray<ObString> headers;
@@ -504,7 +522,7 @@ int publish_group(ObIArray<AiTaskRow> &rows, const ObIArray<int64_t> &claimed_id
         const AiColMeta *meta = metas.at(i);
         ObSqlString esc_value;
         if (NULL == meta) {
-          // slot without a publishable value (orphan/vector/dropped), skip
+          // slot without a publishable value (orphan/dropped), skip
         } else if (OB_FAIL(escape_into(esc_value, values.at(i)))) {
           LOG_WARN("failed to escape result value", K(ret));
         } else if (OB_FAIL(sql.append_fmt("%s`%.*s` = '%s'", first ? "" : ", ",
@@ -584,15 +602,6 @@ void process_group(ObIAllocator &alloc, ObIArray<AiTaskRow> &rows,
         if (NULL == meta) {
           if (OB_FAIL(delete_task(row))) {
             LOG_WARN("failed to drop orphan task", K(ret), K(row));
-          } else if (OB_FAIL(values.push_back(ObString()))
-                     || OB_FAIL(metas.push_back(NULL))) {
-            LOG_WARN("failed to extend arrays", K(ret));
-          }
-        } else if (0 == meta->result_type_.case_compare("vector")) {
-          // async embeddings land with the vector interop stage; hold the
-          // task far in the future so it never blocks other groups
-          if (OB_FAIL(defer_task(row, row.retry_count_, WORKER_VECTOR_HOLD_US))) {
-            LOG_WARN("failed to hold vector task", K(ret), K(row));
           } else if (OB_FAIL(values.push_back(ObString()))
                      || OB_FAIL(metas.push_back(NULL))) {
             LOG_WARN("failed to extend arrays", K(ret));
