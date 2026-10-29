@@ -333,7 +333,7 @@ END_P SET_VAR DELIMITER
 
         QUANTIFIER_TABLE QUARTER QUERY QUEUE_TIME QUICK
 
-        RECOVER REDUNDANT REFRESH RELAY RELAYLOG RELAY_LOG_FILE RELAY_LOG_POS RELAY_THREAD RELOAD REMOVE
+        RECOVER REDUNDANT REFRESH RELAY RELAYLOG RELAY_LOG_FILE RELAY_LOG_POS RELAY_THREAD RELOAD REMOVE RETRY SYNC_MODE MAX_RETRIES
         REPEATABLE RESET RESPECT RESTART RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
@@ -498,6 +498,7 @@ END_P SET_VAR DELIMITER
 %type <node> dynamic_sampling_hint
 %type <node> skip_index_type opt_skip_index_type_list
 %type <node> vec_index_params vec_index_param vec_index_param_value opt_with_vector_index_parameters
+%type <node> ai_column_option ai_column_option_list opt_ai_column_options opt_ai_column_retry_where
 %type <node> json_table_expr unnest_expr mock_jt_on_error_on_empty jt_column_list json_table_column_def
 %type <node> json_table_ordinality_column_def json_table_exists_column_def json_table_value_column_def json_table_nested_column_def
 %type <node> opt_value_on_empty_or_error_or_mismatch opt_on_mismatch
@@ -4835,6 +4836,46 @@ SIMPLE { $$[0] = T_SIMPLE; }
 | PARTIAL { $$[0] = T_PARTIAL; }
 ;
 
+
+opt_ai_column_options:
+WITH '(' ai_column_option_list ')'
+{
+  merge_nodes($$, result, T_AI_COLUMN_OPTIONS, $3);
+}
+| /*EMPTY*/
+{
+  $$ = NULL;
+}
+;
+
+ai_column_option_list:
+ai_column_option_list ',' ai_column_option
+{
+  ParseNode *link = NULL;
+  malloc_non_terminal_node(link, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+  $$ = link;
+}
+| ai_column_option
+{
+  $$ = $1;
+}
+;
+
+ai_column_option:
+SYNC_MODE '=' bit_expr
+{
+  ParseNode *key = NULL;
+  make_name_node(key, result->malloc_pool_, "sync_mode");
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, key, $3);
+}
+| MAX_RETRIES '=' bit_expr
+{
+  ParseNode *key = NULL;
+  make_name_node(key, result->malloc_pool_, "max_retries");
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, key, $3);
+}
+;
+
 column_definition:
 column_definition_ref data_type opt_column_attribute_list opt_column_reference opt_position_column
 {
@@ -4843,6 +4884,15 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $3);
   set_data_type_collation($2, attributes, false, true);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, $2, attributes, $5);
+}
+| column_definition_ref data_type opt_column_attribute_list AI COLUMN '(' expr ')' opt_ai_column_options
+{
+  (void)($4);
+  ParseNode *attributes = NULL;
+  merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $3);
+  set_data_type_collation($2, attributes, false, true);
+  dup_expr_string($7, result, @7.first_column, @7.last_column);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 6, $1, $2, attributes, NULL, $7, $9);
 }
 | column_definition_ref data_type opt_collation opt_generated_keyname AS '(' expr ')' opt_storage_type opt_generated_column_attribute_list opt_column_reference opt_position_column
 {
@@ -14744,6 +14794,10 @@ opt_set table_option_list_space_seperated
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_FOREIGN_KEY_OPTION, 1, $1);
 }
+| RETRY AI COLUMN column_name opt_ai_column_retry_where
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_RETRY, 2, $4, $5);
+}
 |
 DROP CONSTRAINT constraint_name
 {
@@ -14759,6 +14813,19 @@ DROP CONSTRAINT constraint_name
 {
   (void)($2);
   (void)($3);
+  $$ = NULL;
+}
+;
+
+
+opt_ai_column_retry_where:
+WHERE expr
+{
+  dup_expr_string($2, result, @2.first_column, @2.last_column);
+  $$ = $2;
+}
+| /*EMPTY*/
+{
   $$ = NULL;
 }
 ;
@@ -18105,6 +18172,9 @@ ACCOUNT
 |       ROW_NUMBER
 |       REDUNDANT
 |       REFRESH
+|       RETRY
+|       SYNC_MODE
+|       MAX_RETRIES
 |       REJECT
 |       RELAY
 |       RELAYLOG
