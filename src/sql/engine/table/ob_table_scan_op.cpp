@@ -30,6 +30,8 @@
 #include "sql/das/iter/ob_das_iter_utils.h"
 #include "sql/engine/px/ob_granule_iterator_op.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "common/mysqlclient/ob_mysql_proxy.h"
+#include "share/system_variable/ob_sys_var_class_type.h"
 
 namespace oceanbase
 {
@@ -1426,6 +1428,85 @@ int ObTableScanOp::set_need_check_outrow_lob()
   return ret;
 }
 
+// ai_column_strict_read (competition 800493): a statement that reads an async
+// AI result column must not silently observe half-prepared data. When the
+// variable is on, any scan touching an AI result column first probes the whole
+// column for NULL rows: one NULL anywhere means some row still waits for the
+// background worker (or exhausted its retry budget), so the statement fails
+// with OB_AI_COLUMN_UNFINISHED_TASKS instead of returning stale values.
+static int check_ai_column_strict_read(oceanbase::sql::ObExecContext &ctx,
+                                       const uint64_t ref_table_id,
+                                       const common::ObIArray<uint64_t> &access_column_ids)
+{
+  int ret = OB_SUCCESS;
+  ObSQLSessionInfo *session = ctx.get_my_session();
+  common::ObObj var;
+  if (OB_ISNULL(session)) {
+    // no session: nothing to gate on
+  } else if (OB_FAIL(session->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ, var))) {
+    LOG_WARN("failed to get ai_column_strict_read", K(ret));
+  } else if (!var.get_bool()) {
+    // fast path: strict reads disabled
+  } else if (OB_ISNULL(ctx.get_sql_ctx()) || OB_ISNULL(ctx.get_sql_ctx()->schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null schema guard", K(ret));
+  } else {
+    share::schema::ObSchemaGetterGuard *schema_guard = ctx.get_sql_ctx()->schema_guard_;
+    const share::schema::ObTableSchema *table_schema = NULL;
+    const share::schema::ObDatabaseSchema *db_schema = NULL;
+    if (OB_FAIL(schema_guard->get_table_schema(ref_table_id, table_schema))) {
+      LOG_WARN("failed to get table schema", K(ret), K(ref_table_id));
+    } else if (OB_ISNULL(table_schema) || !table_schema->is_user_table()) {
+      // only user tables own AI columns
+    } else if (OB_FAIL(schema_guard->get_database_schema(
+               table_schema->get_database_id(), db_schema))) {
+      LOG_WARN("failed to get database schema", K(ret));
+    } else if (OB_ISNULL(db_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null database schema", K(ret));
+    } else {
+      const common::ObString &db_name = db_schema->get_database_name_str();
+      const common::ObString &tbl_name = table_schema->get_table_name_str();
+      for (int64_t i = 0; OB_SUCC(ret) && i < access_column_ids.count(); ++i) {
+        const share::schema::ObColumnSchemaV2 *col =
+            table_schema->get_column_schema(access_column_ids.at(i));
+        if (OB_ISNULL(col) || !col->is_ai_result_column()) {
+          // not an async AI result column of this table
+        } else {
+          common::ObSqlString sql;
+          common::ObMySQLProxy::MySQLResult res;
+          common::sqlclient::ObMySQLResult *result = NULL;
+          if (OB_FAIL(sql.append_fmt("select 1 from `%.*s`.`%.*s` where `%.*s` is null limit 1",
+                     db_name.length(), db_name.ptr(), tbl_name.length(), tbl_name.ptr(),
+                     col->get_column_name_str().length(), col->get_column_name_str().ptr()))) {
+            LOG_WARN("failed to build strict read sql", K(ret));
+          } else if (OB_FAIL(GCTX.sql_proxy_->read(res, sql.ptr()))) {
+            LOG_WARN("failed to run ai column strict read check", K(ret), K(sql));
+          } else if (OB_ISNULL(result = res.get_result())) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected null check result", K(ret));
+          } else if (OB_FAIL(result->next())) {
+            res.close();
+            if (OB_ITER_END == ret) {
+              // every stored result is present: the read is allowed
+              ret = OB_SUCCESS;
+            } else {
+              LOG_WARN("failed to read strict check result", K(ret));
+            }
+          } else {
+            res.close();
+            ret = OB_AI_COLUMN_UNFINISHED_TASKS;
+            LOG_USER_ERROR(OB_AI_COLUMN_UNFINISHED_TASKS,
+                           static_cast<int64_t>(ref_table_id),
+                           static_cast<int64_t>(col->get_column_id()));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTableScanOp::inner_open()
 {
   int ret = OB_SUCCESS;
@@ -1436,6 +1517,9 @@ int ObTableScanOp::inner_open()
   if (OB_ISNULL(my_session = GET_MY_SESSION(ctx_))) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(ObDASUtils::check_nested_sql_mutating(MY_SPEC.ref_table_id_, ctx_, true))) {
+  } else if (OB_FAIL(check_ai_column_strict_read(ctx_, MY_SPEC.ref_table_id_,
+                                                 MY_CTDEF.get_full_acccess_cids()))) {
+    LOG_WARN("failed to check ai column strict read", K(ret));
   } else if (OB_FAIL(init_table_scan_rtdef())) {
   } else if (MY_SPEC.is_fts_ddl_ && OB_FAIL(fts_index_.init(MY_SPEC.is_fts_index_aux_, MY_SPEC.parser_name_,
           MY_SPEC.parser_properties_))) {

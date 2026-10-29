@@ -392,6 +392,7 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
     bool has_add_column = false;
     bool has_drop_column = false;
     bool has_alter_partition = false;
+    bool has_ai_column_retry = false;
     //in mysql mode, resolve add index after resolve column actions
     ObSEArray<int64_t, 4> add_index_action_idxs;
     for (int64_t i = 0; OB_SUCC(ret) && i < node.num_child_; ++i) {
@@ -402,6 +403,53 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
       } else if (FALSE_IT(alter_table_stmt->inc_alter_table_action_count())) {
       } else {
         switch (action_node->type_) {
+        case T_AI_COLUMN_RETRY: {
+          // RETRY AI COLUMN must stand alone among the alter actions
+          if (has_ai_column_retry || node.num_child_ > 1) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                           "combining AI COLUMN RETRY with another ALTER action");
+          } else {
+            const ParseNode *retry_col_node = action_node->children_[0];
+            const ParseNode *retry_where_node = action_node->children_[1]; // nullable
+            const ObColumnSchemaV2 *ai_col = NULL;
+            if (OB_ISNULL(retry_col_node) || OB_ISNULL(retry_col_node->str_value_)
+                || retry_col_node->str_len_ <= 0) {
+              ret = OB_ERR_UNEXPECTED;
+              SQL_RESV_LOG(WARN, "invalid retry ai column parse node", K(ret));
+            } else {
+              ObString col_name(retry_col_node->str_len_, retry_col_node->str_value_);
+              // quoted identifiers may arrive wrapped in their quotes; strip them
+              const char first = col_name.ptr()[0];
+              const char last = col_name.ptr()[col_name.length() - 1];
+              if (col_name.length() > 2 && (first == last)
+                  && ('`' == first || '"' == first)) {
+                col_name = ObString(col_name.length() - 2, col_name.ptr() + 1);
+              }
+              ai_col = table_schema_->get_column_schema(col_name);
+              if (OB_ISNULL(ai_col) || !ai_col->is_ai_result_column()) {
+                ret = OB_NOT_SUPPORTED;
+                LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
+              }
+            }
+            if (OB_SUCC(ret)) {
+              ObString where_str;
+              if (NULL != retry_where_node && NULL != retry_where_node->str_value_
+                  && retry_where_node->str_len_ > 0) {
+                const ObString raw_where(retry_where_node->str_len_,
+                                         retry_where_node->str_value_);
+                if (OB_FAIL(ob_write_string(*allocator_, raw_where, where_str))) {
+                  SQL_RESV_LOG(WARN, "failed to copy retry where text", K(ret));
+                }
+              }
+              if (OB_SUCC(ret)) {
+                has_ai_column_retry = true;
+                alter_table_stmt->set_ai_column_retry(ai_col->get_column_id(), where_str);
+              }
+            }
+          }
+          break;
+        }
         //deal with alter table option
         case T_ALTER_TABLE_OPTION: {
             alter_table_stmt->set_alter_table_option();

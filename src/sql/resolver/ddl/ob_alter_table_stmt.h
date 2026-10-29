@@ -51,6 +51,18 @@ public:
   bool is_alter_system() const { return is_alter_system_; }
   void set_is_alter_system(const bool flag) { is_alter_system_ = flag; }
 
+  // ALTER TABLE ... RETRY AI COLUMN (competition 800493): carried in memory
+  // only; the request never reaches the DDL args or the root service
+  bool has_ai_column_retry() const { return has_ai_column_retry_; }
+  uint64_t get_ai_retry_column_id() const { return ai_retry_column_id_; }
+  const common::ObString &get_ai_retry_where() const { return ai_retry_where_; }
+  void set_ai_column_retry(const uint64_t column_id, const common::ObString &where_str)
+  {
+    has_ai_column_retry_ = true;
+    ai_retry_column_id_ = column_id;
+    ai_retry_where_ = where_str;
+  }
+
   bool is_alter_triggers() const { return is_alter_triggers_; }
   void set_is_alter_triggers(const bool flag) { is_alter_triggers_ = flag; }
 
@@ -114,6 +126,9 @@ private:
   obcall::ObAlterTriggerArg tg_arg_;
   uint64_t alter_table_action_count_;
   obcall::ObExchangePartitionArg exchange_partition_arg_;
+  bool has_ai_column_retry_ = false;
+  uint64_t ai_retry_column_id_ = common::OB_INVALID_ID;
+  common::ObString ai_retry_where_;
 };
 
 inline int ObAlterTableStmt::set_tz_info_wrap(const common::ObTimeZoneInfoWrap &tz_info_wrap)

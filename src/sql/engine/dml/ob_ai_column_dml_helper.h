@@ -44,6 +44,10 @@ public:
                               const ObDASTabletLoc *new_tablet_loc,
                               const bool is_row_changed,
                               ObDMLRtCtx &dml_rtctx);
+
+public:
+  // monotonic per-ms request id, shared by DML enqueue and ALTER RETRY
+  static int64_t gen_request_id();
 private:
   struct ObAiColEntry
   {
@@ -56,7 +60,6 @@ private:
   };
   static const int64_t PRED_BUF_LEN = 2048;
   static const int64_t SQL_BUF_LEN = 8192;
-  static int64_t gen_request_id();
   static int fetch_table_schema(ObDMLRtCtx &dml_rtctx,
                                 const ObDASTabletLoc *tablet_loc,
                                 share::schema::ObSchemaGetterGuard *&schema_guard,
