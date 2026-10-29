@@ -1,6 +1,7 @@
 // DML integration for async AI COLUMN (competition 800493).
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/dml/ob_ai_column_dml_helper.h"
+#include "sql/engine/dml/ob_ai_column_worker.h"
 #include "sql/engine/dml/ob_table_modify_op.h"
 #include "sql/das/ob_das_define.h"
 #include "share/ob_ai_column_common.h"
@@ -235,34 +236,6 @@ int ObAiColumnDmlHelper::gen_clear_tasks_sql(
   return ret;
 }
 
-int ObAiColumnDmlHelper::gen_invalidate_sql(
-    const ObString &db_name,
-    const ObString &tbl_name,
-    const ObIArray<ObAiColEntry> &entries,
-    const ObString &rowkey_pred,
-    char *buf,
-    const int64_t buf_len)
-{
-  int ret = OB_SUCCESS;
-  int64_t pos = 0;
-  if (OB_FAIL(databuff_printf(buf, buf_len, pos, "update `%.*s`.`%.*s` set ",
-      db_name.length(), db_name.ptr(), tbl_name.length(), tbl_name.ptr()))) {
-    LOG_WARN("failed to build invalidate sql", K(ret));
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < entries.count(); ++i) {
-    if (i > 0 && OB_FAIL(databuff_printf(buf, buf_len, pos, ", "))) {
-      LOG_WARN("failed to build invalidate sql", K(ret));
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "`%.*s` = NULL",
-               entries.at(i).name_.length(), entries.at(i).name_.ptr()))) {
-      LOG_WARN("failed to build invalidate sql", K(ret));
-    }
-  }
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " where %s", rowkey_pred.ptr()))) {
-    LOG_WARN("failed to build invalidate sql", K(ret));
-  }
-  return ret;
-}
 
 int ObAiColumnDmlHelper::after_insert_row(
     const ObInsCtDef &ins_ctdef,
@@ -321,6 +294,10 @@ int ObAiColumnDmlHelper::after_insert_row(
           ret = tmp_ret;
         }
       }
+    }
+    // the first DML that could enqueue a task arms the background worker
+    if (OB_SUCC(ret) && !entries.empty()) {
+      (void)ObAiColumnWorker::get_instance().ensure_started();
     }
   }
   return ret;
@@ -382,6 +359,178 @@ int ObAiColumnDmlHelper::after_delete_row(
   return ret;
 }
 
+// The main update of this transaction already wrote the row once, so the
+// invalidation must not look like a second plain UPDATE on the same row (the
+// memtable defensive check rejects that). Re-issuing the row as
+// insert ... on duplicate key update <result cols> = NULL carries the
+// insert-up write flag, which the check explicitly tolerates, and the rowkey
+// values locate the row without a predicate.
+int ObAiColumnDmlHelper::gen_invalidate_sql(
+    const ObString &db_name,
+    const ObString &tbl_name,
+    const ObIArray<ObAiColEntry> &entries,
+    const ObTableSchema &table_schema,
+    const ExprFixedArray &row,
+    const ObIArray<uint64_t> &das_column_ids,
+    ObEvalCtx &eval_ctx,
+    const ObObjPrintParams &print_params,
+    char *buf,
+    const int64_t buf_len)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  int64_t emitted = 0;
+  if (OB_ISNULL(buf) || buf_len <= 0 || row.count() != das_column_ids.count()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", K(ret), K(row.count()), K(das_column_ids.count()));
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "insert into `%.*s`.`%.*s` (",
+             db_name.length(), db_name.ptr(), tbl_name.length(), tbl_name.ptr()))) {
+    LOG_WARN("failed to start invalidate sql", K(ret));
+  }
+  // column list: everything the DAS row carries except hidden/generated cols
+  for (int64_t i = 0; OB_SUCC(ret) && i < row.count(); ++i) {
+    const ObColumnSchemaV2 *col = table_schema.get_column_schema(das_column_ids.at(i));
+    if (OB_ISNULL(col) || col->is_hidden() || col->is_generated_column()) {
+      // not addressable through an insert
+    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%s`%.*s`",
+               emitted > 0 ? ", " : "", col->get_column_name_str().length(),
+               col->get_column_name_str().ptr()))) {
+      LOG_WARN("failed to add invalidate column", K(ret));
+    } else {
+      ++emitted;
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (0 == emitted) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("no writable columns for invalidate", K(ret));
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, ") values ("))) {
+    LOG_WARN("failed to build invalidate values head", K(ret));
+  }
+  int64_t value_cnt = 0;
+  for (int64_t i = 0; OB_SUCC(ret) && i < row.count(); ++i) {
+    const ObColumnSchemaV2 *col = table_schema.get_column_schema(das_column_ids.at(i));
+    if (OB_ISNULL(col) || col->is_hidden() || col->is_generated_column()) {
+      // keep aligned with the column list pass
+    } else {
+      ObDatum *datum = NULL;
+      ObObj obj;
+      if (value_cnt > 0 && OB_FAIL(databuff_printf(buf, buf_len, pos, ", "))) {
+        LOG_WARN("failed to separate invalidate values", K(ret));
+      } else if (OB_FAIL(row.at(i)->eval(eval_ctx, datum))) {
+        LOG_WARN("failed to eval invalidate row expr", K(ret));
+      } else if (FALSE_IT(obj.reset())) {
+      } else if (OB_FAIL(datum->to_obj(obj, row.at(i)->obj_meta_))) {
+        LOG_WARN("failed to cast invalidate datum", K(ret));
+      } else if (OB_FAIL(obj.print_sql_literal(buf, buf_len, pos, print_params))) {
+        LOG_WARN("failed to print invalidate value", K(ret));
+      } else {
+        ++value_cnt;
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (value_cnt != emitted) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalidate column/value mismatch", K(ret), K(emitted), K(value_cnt));
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, ") on duplicate key update "))) {
+    LOG_WARN("failed to build invalidate tail head", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < entries.count(); ++i) {
+    if (i > 0 && OB_FAIL(databuff_printf(buf, buf_len, pos, ", "))) {
+      LOG_WARN("failed to separate invalidate sets", K(ret));
+    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "`%.*s` = NULL",
+               entries.at(i).name_.length(), entries.at(i).name_.ptr()))) {
+      LOG_WARN("failed to append invalidate null set", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    buf[pos] = '\0';
+  }
+  return ret;
+}
+
+int ObAiColumnDmlHelper::before_update_row(
+    const ObUpdCtDef &upd_ctdef,
+    const ObDASTabletLoc *old_tablet_loc,
+    ObDMLRtCtx &dml_rtctx)
+{
+  int ret = OB_SUCCESS;
+  ObTableModifyOp &dml_op = dml_rtctx.op_;
+  if (!upd_ctdef.is_primary_index_ || dml_op.is_nested_session()) {
+    // secondary index rows and inner sqls never touch AI results
+  } else {
+    ObSchemaGetterGuard *schema_guard = NULL;
+    const ObTableSchema *table_schema = NULL;
+    ObIAllocator &alloc = dml_rtctx.get_exec_ctx().get_allocator();
+    ObEvalCtx &eval_ctx = dml_rtctx.get_eval_ctx();
+    ObSEArray<ObAiColEntry, 4> entries;
+    if (OB_FAIL(fetch_table_schema(dml_rtctx, old_tablet_loc, schema_guard, table_schema))) {
+      LOG_WARN("failed to fetch table schema", K(ret));
+    } else if (OB_FAIL(collect_async_ai_columns(*table_schema, alloc, entries))) {
+      LOG_WARN("failed to collect ai columns", K(ret));
+    } else if (entries.empty()) {
+      // fast path for tables without async AI columns
+    } else {
+      // When the rowkey moves, the split delete+insert serializes the new
+      // row from these expressions, so nulling the stale results here is
+      // the way to land NULL without racing an extra write against the row
+      // move. A plain dependency update persists only the assigned columns;
+      // after_update_row drops its stale results with an insert-up write.
+      const bool upd_pk = upd_ctdef.das_base_ctdef_.is_update_pk_;
+      for (int64_t i = 0; OB_SUCC(ret) && i < entries.count(); ++i) {
+        bool hit = upd_pk;
+        for (int64_t j = 0; OB_SUCC(ret) && !hit
+             && j < upd_ctdef.assign_columns_.count(); ++j) {
+          const uint64_t slot = upd_ctdef.assign_columns_.at(j).projector_index_;
+          const ObColumnSchemaV2 *set_col =
+              (slot < (uint64_t)upd_ctdef.column_ids_.count())
+                  ? table_schema->get_column_schema(upd_ctdef.column_ids_.at(slot))
+                  : NULL;
+          bool found = false;
+          if (OB_NOT_NULL(set_col)
+              && OB_FAIL(ai_column_expr_refers_identifier(entries.at(i).expr_,
+                                                          set_col->get_column_name_str(),
+                                                          found))) {
+            LOG_WARN("failed to scan ai expression", K(ret));
+          } else if (found) {
+            hit = true;
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (!hit) {
+          // this result survives the update untouched
+        } else {
+          for (int64_t j = 0; OB_SUCC(ret) && j < upd_ctdef.new_row_.count()
+               && j < upd_ctdef.column_ids_.count(); ++j) {
+            if (upd_ctdef.column_ids_.at(j) == entries.at(i).column_id_) {
+              ObDatum *datum = NULL;
+              if (OB_FAIL(upd_ctdef.new_row_.at(j)->eval(eval_ctx, datum))) {
+                LOG_WARN("failed to eval stale ai result", K(ret));
+              } else {
+                datum->set_null();
+              }
+            }
+          }
+          // the DAS update serializes full_row_, keep it in step with new_row_
+          for (int64_t j = 0; OB_SUCC(ret) && j < upd_ctdef.full_row_.count()
+               && j < upd_ctdef.dupd_ctdef_.column_ids_.count(); ++j) {
+            if (upd_ctdef.dupd_ctdef_.column_ids_.at(j) == entries.at(i).column_id_) {
+              ObDatum *datum = NULL;
+              if (OB_FAIL(upd_ctdef.full_row_.at(j)->eval(eval_ctx, datum))) {
+                LOG_WARN("failed to eval stale ai result in full row", K(ret));
+              } else {
+                datum->set_null();
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObAiColumnDmlHelper::after_update_row(
     const ObUpdCtDef &upd_ctdef,
     const ObDASTabletLoc *old_tablet_loc,
@@ -418,9 +567,17 @@ int ObAiColumnDmlHelper::after_update_row(
       // updated, or when the rowkey moves (the task targets the new key).
       for (int64_t i = 0; OB_SUCC(ret) && i < entries.count(); ++i) {
         bool hit = upd_pk;
-        for (int64_t j = 0; OB_SUCC(ret) && !hit && j < upd_ctdef.column_ids_.count(); ++j) {
-          const ObColumnSchemaV2 *set_col = table_schema->get_column_schema(
-              upd_ctdef.column_ids_.at(j));
+        // assign_columns_ marks the true SET targets: column_ids_ covers
+        // the whole rewritten row, so matching against it would make the
+        // worker's own publish update look like a dependency change and
+        // re-enqueue tasks forever
+        for (int64_t j = 0;
+             OB_SUCC(ret) && !hit && j < upd_ctdef.assign_columns_.count(); ++j) {
+          const uint64_t slot = upd_ctdef.assign_columns_.at(j).projector_index_;
+          const ObColumnSchemaV2 *set_col =
+              (slot < (uint64_t)upd_ctdef.column_ids_.count())
+                  ? table_schema->get_column_schema(upd_ctdef.column_ids_.at(slot))
+                  : NULL;
           bool found = false;
           if (OB_NOT_NULL(set_col)
               && OB_FAIL(ai_column_expr_refers_identifier(entries.at(i).expr_,
@@ -453,18 +610,32 @@ int ObAiColumnDmlHelper::after_update_row(
       const uint64_t table_id = loc->loc_meta_->ref_table_id_;
       const int64_t request_id = gen_request_id();
       const ObDatabaseSchema *db_schema = NULL;
-      if (OB_FAIL(schema_guard->get_database_schema(table_schema->get_database_id(),
-                                                    db_schema))) {
-        LOG_WARN("failed to get database schema", K(ret));
-      } else if (OB_ISNULL(db_schema)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null database schema", K(ret));
-      } else if (OB_FAIL(gen_invalidate_sql(db_schema->get_database_name_str(),
-                                            table_schema->get_table_name_str(),
-                                            hit_entries, pred, sql_buf, sizeof(sql_buf)))) {
-        LOG_WARN("failed to gen invalidate sql", K(ret));
-      } else if (OB_FAIL(dml_op.execute_write(sql_buf))) {
-        LOG_WARN("failed to invalidate ai column results", K(ret), K(table_id));
+      if (!upd_pk) {
+        // A dependency update must also drop the stale result from storage:
+        // the DAS update only persists the assigned columns, so nulling the
+        // pending datums alone would never reach the row. A primary-key
+        // move instead serializes the new row from new_row_ (the split
+        // delete+insert), where before_update_row already nulled the
+        // results; an insert-up there would materialize the new row ahead
+        // of the split and trip its own duplicate key.
+        if (OB_FAIL(schema_guard->get_database_schema(table_schema->get_database_id(),
+                                                      db_schema))) {
+          LOG_WARN("failed to get database schema", K(ret));
+        } else if (OB_ISNULL(db_schema)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected null database schema", K(ret));
+        } else if (OB_FAIL(gen_invalidate_sql(db_schema->get_database_name_str(),
+                                              table_schema->get_table_name_str(),
+                                              hit_entries, *table_schema,
+                                              upd_ctdef.new_row_,
+                                              upd_ctdef.dupd_ctdef_.column_ids_,
+                                              dml_rtctx.get_eval_ctx(),
+                                              dml_op.get_obj_print_params(),
+                                              sql_buf, sizeof(sql_buf)))) {
+          LOG_WARN("failed to gen invalidate sql", K(ret));
+        } else if (OB_FAIL(dml_op.execute_write(sql_buf))) {
+          LOG_WARN("failed to invalidate ai column results", K(ret), K(table_id));
+        }
       }
       for (int64_t i = 0; OB_SUCC(ret) && i < hit_entries.count(); ++i) {
         if (OB_FAIL(gen_task_insert_sql(table_id, hit_entries.at(i), request_id, pred,

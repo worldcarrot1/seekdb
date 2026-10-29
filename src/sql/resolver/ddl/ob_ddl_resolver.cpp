@@ -2063,6 +2063,8 @@ int ObDDLResolver::resolve_ai_column_definition(ObColumnSchemaV2 &column,
       result_type = common::ObString("json");
     } else if (ob_is_string_tc(column.get_data_type())) {
       result_type = common::ObString("text");
+    } else if (ob_is_numeric_type(column.get_data_type())) {
+      result_type = common::ObString("int");
     } else {
       ret = OB_NOT_SUPPORTED;
     }

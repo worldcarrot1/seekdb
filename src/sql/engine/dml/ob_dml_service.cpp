@@ -1026,6 +1026,11 @@ int ObDMLService::update_row(const ObUpdCtDef &upd_ctdef,
                                                upd_ctdef.new_row_,
                                                upd_ctdef,
                                                upd_rtdef))) {
+  } else if (upd_rtdef.is_row_changed_
+             && OB_FAIL(ObAiColumnDmlHelper::before_update_row(upd_ctdef,
+                                                                old_tablet_loc,
+                                                                dml_rtctx))) {
+    LOG_WARN("failed to process ai column tasks before update", K(ret));
   } else if (OB_UNLIKELY(!upd_rtdef.is_row_changed_)) {
     //old row is equal to new row, only need to lock row
     if (OB_ISNULL(upd_rtdef.dlock_rtdef_)) {

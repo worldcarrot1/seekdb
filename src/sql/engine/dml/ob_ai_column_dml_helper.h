@@ -36,6 +36,9 @@ public:
   static int after_delete_row(const ObDelCtDef &del_ctdef,
                               const ObDASTabletLoc *tablet_loc,
                               ObDMLRtCtx &dml_rtctx);
+  static int before_update_row(const ObUpdCtDef &upd_ctdef,
+                               const ObDASTabletLoc *old_tablet_loc,
+                               ObDMLRtCtx &dml_rtctx);
   static int after_update_row(const ObUpdCtDef &upd_ctdef,
                               const ObDASTabletLoc *old_tablet_loc,
                               const ObDASTabletLoc *new_tablet_loc,
@@ -52,7 +55,7 @@ private:
     common::ObString result_type_; // "json" / "vector" / "text"
   };
   static const int64_t PRED_BUF_LEN = 2048;
-  static const int64_t SQL_BUF_LEN = 4096;
+  static const int64_t SQL_BUF_LEN = 8192;
   static int64_t gen_request_id();
   static int fetch_table_schema(ObDMLRtCtx &dml_rtctx,
                                 const ObDASTabletLoc *tablet_loc,
@@ -69,6 +72,16 @@ private:
                                     char *buf,
                                     const int64_t buf_len,
                                     common::ObString &pred);
+  static int gen_invalidate_sql(const common::ObString &db_name,
+                                const common::ObString &tbl_name,
+                                const common::ObIArray<ObAiColEntry> &entries,
+                                const share::schema::ObTableSchema &table_schema,
+                                const ExprFixedArray &row,
+                                const common::ObIArray<uint64_t> &das_column_ids,
+                                ObEvalCtx &eval_ctx,
+                                const common::ObObjPrintParams &print_params,
+                                char *buf,
+                                const int64_t buf_len);
   static int append_escaped(common::ObSqlString &sql, const common::ObString &raw);
   static int gen_task_insert_sql(const uint64_t table_id,
                                  const ObAiColEntry &entry,
@@ -80,12 +93,6 @@ private:
                                  const common::ObString &rowkey_pred,
                                  char *buf,
                                  const int64_t buf_len);
-  static int gen_invalidate_sql(const common::ObString &db_name,
-                                const common::ObString &tbl_name,
-                                const common::ObIArray<ObAiColEntry> &entries,
-                                const common::ObString &rowkey_pred,
-                                char *buf,
-                                const int64_t buf_len);
 };
 } // namespace sql
 } // namespace oceanbase
