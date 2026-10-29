@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "share/ob_ai_column_common.h"
 #include "sql/resolver/ddl/ob_create_table_resolver.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -669,6 +670,8 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       }
     }
 
+    struct AiColumnPending { uint64_t result_col_id_; common::ObString spec_; };
+    common::ObSEArray<AiColumnPending, 4> ai_pending_cols;
     int64_t resolved_cols_count = resolved_cols.count();
     // Second pass traversal, use resolved_cols to parse out all column schema and save to table_schema
     // And parse index etc
@@ -834,6 +837,26 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
             }
           }
 
+          if (OB_SUCC(ret) && column.is_ai_result_column()) {
+            if (stat.is_set_not_null_ || stat.is_set_default_value_
+                || stat.is_primary_key_ || stat.is_unique_key_ || stat.is_autoincrement_) {
+              ret = OB_NOT_SUPPORTED;
+            } else {
+              // Defer adding AI hidden columns until all user columns are resolved.
+              // Adding them here would make later user columns take smaller column ids
+              // while being appended after the hidden columns, breaking
+              // ObTableSchema::check_column_array_sorted_by_column_id().
+              AiColumnPending ai_pending;
+              ai_pending.result_col_id_ = column.get_column_id();
+              ai_pending.spec_.reset();
+              if (OB_FAIL(ob_write_string(*allocator_, pending_ai_spec_.string(), ai_pending.spec_))) {
+                LOG_WARN("failed to save ai spec string", K(ret));
+              } else if (OB_FAIL(ai_pending_cols.push_back(ai_pending))) {
+                LOG_WARN("failed to push pending ai column", K(ret));
+              }
+            }
+          }
+
           if (OB_SUCC(ret) && !column.is_invisible_column()) {
             has_visible_col = true;
           }
@@ -930,6 +953,46 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       } else if (NULL == primary_node) {
         // do nothing
       } else if (OB_FAIL(resolve_primary_key_node(*primary_node, stats))) {
+      }
+      if (OB_SUCC(ret) && !ai_pending_cols.empty()) {
+        for (int64_t ai_k = 0; OB_SUCC(ret) && ai_k < ai_pending_cols.count(); ++ai_k) {
+          const ObColumnSchemaV2 *ai_result_col =
+              table_schema.get_column_schema(ai_pending_cols.at(ai_k).result_col_id_);
+          if (OB_ISNULL(ai_result_col)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("ai result column not found", K(ret), K(ai_pending_cols.at(ai_k).result_col_id_));
+          }
+          for (int64_t ai_i = 0; OB_SUCC(ret) && ai_i < share::AI_COLUMN_HIDDEN_COL_CNT; ++ai_i) {
+            share::schema::ObColumnSchemaV2 ai_hidden_col;
+            const uint64_t ai_col_id = gen_column_id();
+            if (OB_FAIL(share::fill_ai_hidden_column_schema(
+                    ai_result_col->get_column_name_str(), ai_i, ai_hidden_col))) {
+              LOG_WARN("failed to fill ai hidden column schema", K(ret), K(ai_i));
+            } else if (NULL != table_schema.get_column_schema(
+                           ai_hidden_col.get_column_name_str())) {
+              ret = OB_ERR_COLUMN_DUPLICATE;
+              LOG_USER_ERROR(OB_ERR_COLUMN_DUPLICATE,
+                             ai_hidden_col.get_column_name_str().length(),
+                             ai_hidden_col.get_column_name_str().ptr());
+            } else if (2 == ai_i
+                       && OB_FAIL(ai_hidden_col.set_comment(ai_pending_cols.at(ai_k).spec_))) {
+              LOG_WARN("failed to set ai spec comment", K(ret));
+            } else {
+              ai_hidden_col.set_column_id(ai_col_id);
+              if (OB_FAIL(table_schema.add_column(ai_hidden_col))) {
+                LOG_WARN("failed to add ai hidden column", K(ret));
+              } else {
+                ObColumnNameHashWrapper ai_name_key(ai_hidden_col.get_column_name_str());
+                if (OB_FAIL(column_name_set_.set_refactored(ai_name_key))) {
+                  LOG_WARN("failed to add ai hidden column name", K(ret),
+                           K(ai_hidden_col.get_column_name_str()));
+                } else {
+                  ret = OB_SUCCESS;
+                }
+              }
+            }
+          }
+        }
       }
       if (OB_SUCC(ret)) {
         table_schema.set_max_used_column_id(cur_column_id_);

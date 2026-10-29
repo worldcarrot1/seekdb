@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "share/ob_ai_column_common.h"
 #include "config_bridge.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_part_expr_checker.h"
@@ -3457,6 +3458,45 @@ int ObAlterTableResolver::resolve_add_column(const ParseNode &node, ObColumnName
         if (OB_SUCC(ret)) {
           if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
           } else if (FALSE_IT(alter_table_stmt->set_sql_mode(session_info_->get_sql_mode()))) {
+          }
+        }
+
+        if (OB_SUCC(ret) && alter_column_schema.is_ai_result_column()) {
+          if (stat.is_set_not_null_ || stat.is_set_default_value_
+              || stat.is_primary_key_ || stat.is_unique_key_ || stat.is_autoincrement_) {
+            ret = OB_NOT_SUPPORTED;
+          }
+          for (int64_t ai_i = 0; OB_SUCC(ret) && ai_i < share::AI_COLUMN_HIDDEN_COL_CNT; ++ai_i) {
+            share::schema::AlterColumnSchema ai_hidden_col;
+            ai_hidden_col.alter_type_ = OB_DDL_ADD_COLUMN;
+            if (OB_FAIL(share::fill_ai_hidden_column_schema(
+                    alter_column_schema.get_column_name_str(), ai_i, ai_hidden_col))) {
+              SQL_RESV_LOG(WARN, "failed to fill ai hidden column schema", K(ret), K(ai_i));
+            } else if (NULL != table_schema_->get_column_schema(
+                           ai_hidden_col.get_column_name_str())) {
+              ret = OB_ERR_COLUMN_DUPLICATE;
+              LOG_USER_ERROR(OB_ERR_COLUMN_DUPLICATE,
+                             ai_hidden_col.get_column_name_str().length(),
+                             ai_hidden_col.get_column_name_str().ptr());
+            } else if (2 == ai_i
+                       && OB_FAIL(ai_hidden_col.set_comment(pending_ai_spec_.string()))) {
+              SQL_RESV_LOG(WARN, "failed to set ai spec comment", K(ret));
+            } else {
+              share::schema::ObColumnSchemaHashWrapper ai_col_key(
+                  ai_hidden_col.get_column_name_str());
+              if (OB_FAIL(add_column_names_set.set_refactored(ai_col_key))) {
+                if (OB_HASH_EXIST == ret) {
+                  ret = OB_ERR_COLUMN_DUPLICATE;
+                  LOG_USER_ERROR(OB_ERR_COLUMN_DUPLICATE,
+                                 ai_hidden_col.get_column_name_str().length(),
+                                 ai_hidden_col.get_column_name_str().ptr());
+                } else {
+                  SQL_RESV_LOG(WARN, "failed to record ai hidden column name", K(ret));
+                }
+              } else if (OB_FAIL(alter_table_stmt->add_column(ai_hidden_col))) {
+                SQL_RESV_LOG(WARN, "failed to add ai hidden column", K(ret));
+              }
+            }
           }
         }
       }

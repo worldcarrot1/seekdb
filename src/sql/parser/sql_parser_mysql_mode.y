@@ -4862,13 +4862,13 @@ ai_column_option_list ',' ai_column_option
 ;
 
 ai_column_option:
-SYNC_MODE '=' bit_expr
+SYNC_MODE COMP_EQ bit_expr
 {
   ParseNode *key = NULL;
   make_name_node(key, result->malloc_pool_, "sync_mode");
   malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, key, $3);
 }
-| MAX_RETRIES '=' bit_expr
+| MAX_RETRIES COMP_EQ bit_expr
 {
   ParseNode *key = NULL;
   make_name_node(key, result->malloc_pool_, "max_retries");
