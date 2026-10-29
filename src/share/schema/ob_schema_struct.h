@@ -152,6 +152,11 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 #define GENERATED_VEC_SPIV_VALUE_COLUMN_FLAG (INT64_C(1) << 52)
 #define GENERATED_VEC_SPIV_VEC_COLUMN_FLAG (INT64_C(1) << 53)
 #define GENERATED_HYBRID_VEC_CHUNK_COLUMN_FLAG (INT64_C(1) << 54)
+// AI COLUMN (competition 800493): result + hidden state/request/spec family
+#define AI_COLUMN_RESULT_FLAG (INT64_C(1) << 55)   // user-visible AI COLUMN result column
+#define AI_COLUMN_STATE_FLAG (INT64_C(1) << 56)    // hidden per-row async task state
+#define AI_COLUMN_REQUEST_FLAG (INT64_C(1) << 57)  // hidden per-row request generation id
+#define AI_COLUMN_SPEC_FLAG (INT64_C(1) << 58)     // hidden normalized result spec
 #define SPATIAL_COLUMN_SRID_MASK (0xffffffffffffffe0L)
 
 #define STORED_COLUMN_FLAGS_MASK 0xFFFFFFFF
