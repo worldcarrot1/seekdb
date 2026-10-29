@@ -3209,7 +3209,8 @@ int ObTableSqlService::gen_column_dml_without_check(
                          || OB_FAIL(is_history
                                         ? dml.add_pk_column("schema_version", column.get_schema_version())
                                         : dml.add_column("schema_version", column.get_schema_version()))
-                         || OB_FAIL(dml.add_column("column_flags", column.get_stored_column_flags()))
+                         || OB_FAIL(dml.add_column("column_flags", column.get_stored_column_flags()
+                                         | (column.get_column_flags() & AI_COLUMN_STORED_FLAGS)))
                          || OB_FAIL(dml.add_column("extended_type_info", ObHexEscapeSqlStr(bin_extended_type_info)))
                          || OB_FAIL(dml.add_column("prev_column_id", column.get_prev_column_id()))
                          || (OB_FAIL(dml.add_column("srs_id", column.get_srs_id())))

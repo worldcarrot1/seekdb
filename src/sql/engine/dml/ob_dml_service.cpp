@@ -34,6 +34,7 @@
 #include "sql/engine/ob_batch_rows.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "query/vector/ob_vector_index_util.h"
+#include "sql/engine/dml/ob_ai_column_dml_helper.h"
 namespace oceanbase
 {
 using namespace common;
@@ -854,6 +855,10 @@ int ObDMLService::insert_row(const ObInsCtDef &ins_ctdef,
                                 ins_ctdef.new_row_,
                                 stored_row))) {
   }
+  if (OB_SUCC(ret)
+      && OB_FAIL(ObAiColumnDmlHelper::after_insert_row(ins_ctdef, tablet_loc, dml_rtctx))) {
+    LOG_WARN("failed to process ai column tasks after insert", K(ret));
+  }
   return ret;
 }
 
@@ -894,6 +899,10 @@ int ObDMLService::delete_row(const ObDelCtDef &del_ctdef,
                                                               del_ctdef.old_row_,
                                                               del_ctdef.trans_info_expr_,
                                                               stored_row))) {
+  }
+  if (OB_SUCC(ret)
+      && OB_FAIL(ObAiColumnDmlHelper::after_delete_row(del_ctdef, tablet_loc, dml_rtctx))) {
+    LOG_WARN("failed to process ai column tasks after delete", K(ret));
   }
   return ret;
 }
@@ -1091,6 +1100,14 @@ int ObDMLService::update_row(const ObUpdCtDef &upd_ctdef,
                 "old row", ROWEXPR2STR(dml_rtctx.get_eval_ctx(), upd_ctdef.old_row_),
                 "new row", ROWEXPR2STR(dml_rtctx.get_eval_ctx(), upd_ctdef.new_row_));
     }
+  }
+  if (OB_SUCC(ret)
+      && OB_FAIL(ObAiColumnDmlHelper::after_update_row(upd_ctdef,
+                                                       old_tablet_loc,
+                                                       new_tablet_loc,
+                                                       upd_rtdef.is_row_changed_,
+                                                       dml_rtctx))) {
+    LOG_WARN("failed to process ai column tasks after update", K(ret));
   }
   return ret;
 }

@@ -157,6 +157,10 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 #define AI_COLUMN_STATE_FLAG (INT64_C(1) << 56)    // hidden per-row async task state
 #define AI_COLUMN_REQUEST_FLAG (INT64_C(1) << 57)  // hidden per-row request generation id
 #define AI_COLUMN_SPEC_FLAG (INT64_C(1) << 58)     // hidden normalized result spec
+
+// AI column flags must survive schema persistence to __all_column
+#define AI_COLUMN_STORED_FLAGS (AI_COLUMN_RESULT_FLAG | AI_COLUMN_STATE_FLAG | \
+                                AI_COLUMN_REQUEST_FLAG | AI_COLUMN_SPEC_FLAG)
 #define SPATIAL_COLUMN_SRID_MASK (0xffffffffffffffe0L)
 
 #define STORED_COLUMN_FLAGS_MASK 0xFFFFFFFF
