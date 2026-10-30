@@ -179,15 +179,30 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
-    ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
+    const ObString src_str = src.get_word().get_string();
+    // For utf8mb4 a byte below 0x80 is a complete ASCII character, and the
+    // only bytes casedn can change there are 'A'..'Z'.  A word without them
+    // needs neither the allocator copy nor the charset walk, and aliasing the
+    // source is what the no-casedown branch below already does.
+    bool identity = (CHARSET_UTF8MB4 == ObCharset::charset_type_by_coll(
+                         word_meta_.get_collation_type()));
+    for (int64_t i = 0; identity && i < src_str.length(); ++i) {
+      const unsigned char c = static_cast<unsigned char>(src_str.ptr()[i]);
+      identity = (c < 0x80) && !(c >= 'A' && c <= 'Z');
+    }
+    if (identity) {
+      dst = src;
     } else {
-      ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
-      dst = tmp;
+      ObString dst_str;
+      if (OB_FAIL(ObCharset::tolower(
+                      word_meta_.get_collation_type(),
+                      src_str,
+                      dst_str,
+                      allocator_))) {
+      } else {
+        ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+        dst = tmp;
+      }
     }
   } else {
     dst = src;

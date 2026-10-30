@@ -61,7 +61,19 @@ private:
 
 private:
   ObArenaAllocator alloc_;
-  hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // The arbitrator lives on one worker's stack for one batch of characters,
+  // so neither the bucket latches nor the spin mutex inside the default node
+  // allocator of this map can ever be observed by another thread.
+  typedef common::hash::SimpleAllocer<
+            common::hash::HashMapTypes<int64_t, ObIKTokenChain *>::AllocType,
+            common::hash::NodeNumTraits<
+                common::hash::HashMapTypes<int64_t, ObIKTokenChain *>::AllocType>::NODE_NUM,
+            common::hash::NoPthreadDefendMode> IKChainNodeAlloc;
+  common::hash::ObHashMap<int64_t, ObIKTokenChain *,
+                          common::hash::NoPthreadDefendMode,
+                          common::hash::hash_func<int64_t>,
+                          common::hash::equal_to<int64_t>,
+                          IKChainNodeAlloc> chains_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);

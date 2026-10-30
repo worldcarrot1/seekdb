@@ -285,16 +285,27 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
   int ret = OB_SUCCESS;
   static int64_t FT_WORD_DOC_COL_CNT = 4;
   static constexpr int64_t FT_MAX_WORD_BUCKET = 997;
-  const int64_t ft_word_bkt_cnt = MIN(MAX(fulltext.length() / 10, 2), FT_MAX_WORD_BUCKET);
   int64_t doc_length = 0;
-  ObFTWordMap ft_word_map;
   void *rows_buf = nullptr;
   blocksstable::ObDatumRow *rows = nullptr;
+  // The map never leaves the calling thread (see the note in ob_fts_struct.h),
+  // but it used to be created and destroyed once per document, which meant a
+  // raw malloc of the bucket array plus its initialisation and teardown for
+  // every row passing through index build or DML.  Keep one map per thread at
+  // the fixed maximum size and let reuse() clear only the entries; the entry
+  // count still comes from the map itself, so behaviour is unchanged.
+  thread_local ObFTWordMap tl_ft_word_map;
+  thread_local bool tl_ft_word_map_created = false;
+  ObFTWordMap &ft_word_map = tl_ft_word_map;
   if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (0 == fulltext.length()) {
     ret = OB_ITER_END;
-  } else if (OB_FAIL(ft_word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+  } else if (OB_UNLIKELY(!tl_ft_word_map_created
+                         && OB_FAIL(ft_word_map.create(FT_MAX_WORD_BUCKET,
+                                                       common::ObMemAttr("FTWordMap"))))) {
+  } else if (FALSE_IT(tl_ft_word_map_created = true)) {
+  } else if (FALSE_IT(ft_word_map.reuse())) {
   } else if (OB_FAIL(segment_and_calc_word_count(allocator,
                                                  helper,
                                                  ft_obj_meta,
