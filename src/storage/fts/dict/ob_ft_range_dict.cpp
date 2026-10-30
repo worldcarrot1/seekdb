@@ -44,6 +44,58 @@ namespace oceanbase
 namespace storage
 {
 
+namespace
+{
+// Decode the first character of a well formed utf8 string.
+// @param [out] cp      code point of the first character
+// @param [out] char_len byte length of the first character
+// @return false when the input is empty or is not well formed / canonical utf8.
+inline bool utf8_first_char(const char *s, const int64_t len, int32_t &cp, int32_t &char_len)
+{
+  bool bret = false;
+  cp = 0;
+  char_len = 0;
+  if (nullptr != s && len > 0) {
+    const uint8_t b0 = static_cast<uint8_t>(s[0]);
+    int32_t follow = -1;
+    int32_t min_cp = 0;
+    if (b0 < 0x80) {
+      cp = b0;
+      follow = 0;
+      min_cp = 0;
+    } else if ((b0 & 0xE0) == 0xC0) {
+      cp = b0 & 0x1F;
+      follow = 1;
+      min_cp = 0x80;
+    } else if ((b0 & 0xF0) == 0xE0) {
+      cp = b0 & 0x0F;
+      follow = 2;
+      min_cp = 0x800;
+    } else if ((b0 & 0xF8) == 0xF0) {
+      cp = b0 & 0x07;
+      follow = 3;
+      min_cp = 0x10000;
+    }
+    if (follow >= 0 && len >= follow + 1) {
+      bool valid = true;
+      for (int32_t i = 1; valid && i <= follow; ++i) {
+        const uint8_t bi = static_cast<uint8_t>(s[i]);
+        if ((bi & 0xC0) != 0x80) {
+          valid = false;
+        } else {
+          cp = (cp << 6) | static_cast<int32_t>(bi & 0x3F);
+        }
+      }
+      // reject overlong encodings, they would break code point ordering
+      if (valid && cp >= min_cp) {
+        char_len = follow + 1;
+        bret = true;
+      }
+    }
+  }
+  return bret;
+}
+} // namespace
 
 int ObFTRangeDict::build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container)
 {
@@ -382,17 +434,42 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 {
   int ret = OB_SUCCESS;
   bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
-      dict = range_dicts_[i].dict_;
-      found = true;
+  int32_t word_cp = 0;
+  int32_t word_char_len = 0;
+  if (char_order_usable_
+      && utf8_first_char(single_word.ptr(), single_word.length(), word_cp, word_char_len)
+      && word_char_len == single_word.length()) {
+    // single_word is exactly one utf8 character and every range boundary starts
+    // with one, so the byte wise comparisons of CS_TYPE_UTF8MB4_BIN collapse to
+    // code point comparisons (utf8 preserves code point order):
+    //   start <= word  <=>  start_cp < word_cp
+    //                     || (start_cp == word_cp && start is that very character)
+    //   end   >= word  <=>  end_cp >= word_cp
+    for (int64_t i = 0; !found && i < range_dicts_.size(); ++i) {
+      const ObFTRange &range = range_dicts_[i];
+      if (range.start_char_cp_ > word_cp || range.end_char_cp_ < word_cp) {
+        // the character falls outside of this range
+      } else if (range.start_char_cp_ == word_cp
+                 && range.start_.get_word().length() != word_char_len) {
+        // start_ is a longer word beginning with the same character, so start_ > word
+      } else {
+        dict = range.dict_;
+        found = true;
+      }
+    }
+  } else {
+    for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
+      if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                            range_dicts_[i].start_.get_word(),
+                            single_word)
+                <= 0
+          && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                               range_dicts_[i].end_.get_word(),
+                               single_word)
+                 >= 0) {
+        dict = range_dicts_[i].dict_;
+        found = true;
+      }
     }
   }
   if (!found) {
@@ -405,6 +482,10 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_container)
 {
   int ret = OB_SUCCESS;
+  // The code point fast path of find_first_char_range() is only valid for
+  // utf8mb4 dicts whose range boundaries all start with a well formed character.
+  char_order_usable_ = (ObCharsetType::CHARSET_UTF8MB4
+                        == ObCharset::charset_type_by_coll(desc_.coll_type_));
   for (ObList<ObFTCacheRangeHandle *, ObIAllocator>::const_iterator iter = range_container.get_handles().begin();
        OB_SUCC(ret) && iter != range_container.get_handles().end();
        iter++) {
@@ -418,6 +499,20 @@ int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_co
       range.start_ = dat->start_word_;
       range.end_ = dat->end_word_;
       range.dict_ = dict;
+      if (char_order_usable_) {
+        const ObString start_word = range.start_.get_word();
+        const ObString end_word = range.end_.get_word();
+        int32_t start_char_len = 0;
+        int32_t end_char_len = 0;
+        if (utf8_first_char(start_word.ptr(), start_word.length(), range.start_char_cp_, start_char_len)
+            && utf8_first_char(end_word.ptr(), end_word.length(), range.end_char_cp_, end_char_len)) {
+          // ok, this range can be compared by code point
+        } else {
+          char_order_usable_ = false;
+          range.start_char_cp_ = INT32_MIN;
+          range.end_char_cp_ = INT32_MIN;
+        }
+      }
       if (OB_FAIL(range_dicts_.push_back(range))) {
       }
     }

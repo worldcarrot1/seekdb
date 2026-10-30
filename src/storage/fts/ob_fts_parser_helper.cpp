@@ -259,20 +259,24 @@ int ObFTParseHelper::segment(
     const ObFTParserProperty &property,
     const int64_t parser_version,
     const ObIFTParserDesc *parser_desc,
-    const ObCharsetInfo *cs,
+    const common::ObCollationType coll_type,
     const char *ft,
     const int64_t ft_len,
     common::ObIAllocator &allocator,
     ObAddWord &add_word)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(parser_version < 0 || nullptr == parser_desc || nullptr == cs || nullptr == ft || 0 >= ft_len)) {
+  const ObCharsetInfo *cs = nullptr;
+  if (OB_UNLIKELY(parser_version < 0 || nullptr == parser_desc || nullptr == ft || 0 >= ft_len)
+      || OB_UNLIKELY(common::CS_TYPE_INVALID == coll_type)
+      || OB_ISNULL(cs = common::ObCharset::get_charset(coll_type))) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     ObFTParserParam param;
     ObITokenIterator *iter = nullptr;
     param.allocator_ = &allocator;
     param.cs_ = cs;
+    param.coll_type_ = coll_type;
     param.fulltext_ = ft;
     param.ft_length_ = ft_len;
     param.parser_version_ = parser_version;
@@ -383,7 +387,7 @@ int ObFTParseHelper::segment(
                     parser_property_,
                     parser_name_.get_parser_version(),
                     parser_desc_,
-                    cs,
+                    type,
                     fulltext,
                     fulltext_len,
                     *allocator_,

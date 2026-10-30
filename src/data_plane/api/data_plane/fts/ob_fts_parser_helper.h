@@ -211,7 +211,7 @@ private:
       const ObFTParserProperty &property,
       const int64_t parser_version,
       const ObIFTParserDesc *parser_desc,
-      const ObCharsetInfo *cs,
+      const common::ObCollationType coll_type,
       const char *fulltext,
       const int64_t fulltext_len,
       common::ObIAllocator &allocator,

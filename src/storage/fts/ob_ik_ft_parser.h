@@ -40,11 +40,12 @@ public:
         coll_type_(ObCollationType::CS_TYPE_INVALID),
         ctx_(nullptr),
         hub_(hub),
-        segmenters_(allocator_),
+        segmenter_cnt_(0),
         dict_main_(nullptr),
         dict_quan_(nullptr),
         dict_stop_(nullptr)
   {
+    MEMSET(segmenters_, 0, sizeof(segmenters_));
   }
 
   virtual ~ObIKFTParser() { reset(); }
@@ -79,13 +80,16 @@ private:
 
 private:
   static constexpr int SEGMENT_LIMIT = 1000;
+  // letter / quantifier / cjk / surrogate, in this fixed order
+  static constexpr int64_t MAX_SEGMENTER_CNT = 4;
   ObIAllocator &allocator_;
   bool is_inited_;
 
   ObCollationType coll_type_;
   TokenizeContext *ctx_;
   ObFTDictHub *hub_;
-  ObList<ObIIKProcessor *, ObIAllocator> segmenters_;
+  ObIIKProcessor *segmenters_[MAX_SEGMENTER_CNT];
+  int64_t segmenter_cnt_;
 
   // Shared, immutable, process-wide dicts owned by hub_ (pinned there once).
   ObIFTDict *dict_main_;

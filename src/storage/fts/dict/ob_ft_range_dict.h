@@ -38,7 +38,7 @@ public:
   ObFTRangeDict(ObIAllocator &alloc,
                 ObFTCacheRangeContainer *range_container,
                 const ObFTDictDesc &desc)
-      : is_inited_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
+      : is_inited_(false), char_order_usable_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
         range_dicts_(&range_alloc_), range_container_(range_container)
   {
   }
@@ -50,6 +50,10 @@ public:
     ObFTSingleWord start_;
     ObFTSingleWord end_;
     ObIFTDict *dict_; // a cache dict
+    // Code point of the first character of start_/end_, cached for the fast
+    // path of find_first_char_range().  INT32_MIN marks it as unusable.
+    int32_t start_char_cp_ = INT32_MIN;
+    int32_t end_char_cp_ = INT32_MIN;
   };
 
 public:
@@ -102,6 +106,10 @@ private:
 private:
   static constexpr int DEFAULT_KEY_PER_RANGE = 50000; // by estimated
   bool is_inited_;
+  // Set when every range boundary starts with a well formed utf8 character and
+  // the dict collation is utf8mb4, i.e. when find_first_char_range() may compare
+  // code points instead of running strnncoll over the whole range list.
+  bool char_order_usable_;
   ObFTDictDesc desc_;
   ObArenaAllocator range_alloc_;
   ObVector<ObFTRange, ObArenaAllocator> range_dicts_;

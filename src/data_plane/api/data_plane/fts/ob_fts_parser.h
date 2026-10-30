@@ -59,6 +59,7 @@ public:
 
   ObFTParserParam()
       : cs_(nullptr),
+        coll_type_(0 /* CS_TYPE_INVALID, i.e. not filled in */),
         fulltext_(nullptr),
         ft_length_(0),
         parser_version_(0),
@@ -83,6 +84,7 @@ public:
   void reset()
   {
     cs_ = nullptr;
+    coll_type_ = 0;
     fulltext_ = nullptr;
     ft_length_ = 0;
     parser_version_ = 0;
@@ -94,6 +96,7 @@ public:
   }
 
   TO_STRING_KV(KP_(cs),
+               K_(coll_type),
                K_(fulltext),
                K_(ft_length),
                K_(parser_version),
@@ -104,6 +107,9 @@ public:
 
 public:
   const ObCharsetInfo *cs_;
+  // ObCollationType of cs_, carried so that parsers do not have to resolve the
+  // collation name again for every document.  0 (CS_TYPE_INVALID) means unset.
+  int32_t coll_type_;
   const char *fulltext_;
   int64_t ft_length_;
   int64_t parser_version_;
