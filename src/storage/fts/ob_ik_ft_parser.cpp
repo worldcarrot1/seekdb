@@ -182,7 +182,10 @@ int ObIKFTParser::process_next_batch()
     }
 
     if (OB_SUCC(ret) || OB_ITER_END == ret) {
-      ObIKArbitrator arb;
+      // One arbitrator per worker thread instead of a fresh one per batch;
+      // prepare() empties the kept containers in the destructor's order.
+      thread_local ObIKArbitrator tl_arb;
+      ObIKArbitrator &arb = tl_arb;
       if (OB_FAIL(arb.process(*ctx_))) {
       } else if (OB_FAIL(arb.output_result(*ctx_))) {
       }

@@ -304,12 +304,39 @@ int ObIKArbitrator::prepare(TokenizeContext &ctx)
 
   int cal_bucket_num = MAX(ctx.fulltext_len() / 100, 10);
   cal_bucket_num = MIN(cal_bucket_num, 100);
-  if (OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
+  bool need_create = true;
+  // The chain map only ever stores pointers into alloc_, so emptying it for
+  // the next batch follows the order the destructor already used: map first,
+  // arena after.  Keeping the buckets between batches saves one malloc of a
+  // bucket array plus its teardown for every document and every batch.
+  if (OB_SUCC(ret) && chains_created_) {
+    if (cal_bucket_num <= chains_bucket_num_) {
+      need_create = false;
+      if (OB_FAIL(chains_.reuse())) {
+      } else {
+        alloc_.reset();
+      }
+    } else if (OB_FAIL(chains_.destroy())) {
+    } else {
+      chains_created_ = false;
+    }
+  }
+  if (OB_SUCC(ret) && need_create
+      && OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
+  } else if (OB_SUCC(ret) && need_create) {
+    chains_created_ = true;
+    chains_bucket_num_ = cal_bucket_num;
+    alloc_.reset();
   }
   return ret;
 }
 
-ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")) {}
+ObIKArbitrator::ObIKArbitrator()
+  : alloc_(lib::ObMemAttr("IK Arbitrator")),
+    chains_created_(false),
+    chains_bucket_num_(0)
+{
+}
 
 int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
 {
