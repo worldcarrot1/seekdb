@@ -52,11 +52,20 @@ private:
 };
 
 // The word map is a per-document container that never outlives the call
-// that creates it (index build, TOKENIZE()), so the default per bucket
-// latches only add atomic operations to every token that is counted.
-// NoPthreadDefendMode keeps the container behaviour itself unchanged.
+// that creates it (index build, TOKENIZE()), so neither the per bucket latches
+// nor the lock that the node allocator takes for every single hash node are
+// worth their atomic operations.  NoPthreadDefendMode for both keeps the
+// container behaviour itself unchanged.
+typedef common::hash::SimpleAllocer<
+            common::hash::HashMapTypes<ObFTWord, int64_t>::AllocType,
+            common::hash::NodeNumTraits<
+                common::hash::HashMapTypes<ObFTWord, int64_t>::AllocType>::NODE_NUM,
+            common::hash::NoPthreadDefendMode> ObFTWordNodeAlloc;
 typedef common::hash::ObHashMap<ObFTWord, int64_t,
-                          common::hash::NoPthreadDefendMode> ObFTWordMap;
+                          common::hash::NoPthreadDefendMode,
+                          common::hash::hash_func<ObFTWord>,
+                          common::hash::equal_to<ObFTWord>,
+                          ObFTWordNodeAlloc> ObFTWordMap;
 
 class ObAddWordFlag final
 {

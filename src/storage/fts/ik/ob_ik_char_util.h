@@ -447,18 +447,21 @@ inline int ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, 
   int ret = OB_SUCCESS;
   bool checker = false;
   type = CharType::USELESS;
+  ob_wc_t unicode = 0;
 
-  if (OB_FAIL(is_alpha<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  // The predicates below are all pure functions of the code point, and the old
+  // chain decoded the very same character again for every single one of them.
+  // One decode plus the same checks in the same order classifies identically;
+  // the surrogate helpers keep their own signature because for utf8mb4 they are
+  // compiled down to a constant false and never touch the input.
+  if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
+  } else if (ObUnicodeBlockUtils::is_alpha(unicode)) {
     type = CharType::ENGLISH_LETTER;
-  } else if (OB_FAIL(is_arabic<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_arabic(unicode)) {
     type = CharType::ARABIC_LETTER;
-  } else if (OB_FAIL(is_chinese<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_chinese(unicode)) {
     type = CharType::CHINESE;
-  } else if (OB_FAIL(is_other_cjk<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_other_cjk(unicode)) {
     type = CharType::OTHER_CJK;
   } else if (OB_FAIL(is_surrogate_high<CS_TYPE>(input, char_len, checker))) {
   } else if (checker) {
