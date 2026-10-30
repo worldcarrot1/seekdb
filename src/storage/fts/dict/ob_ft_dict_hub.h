@@ -17,8 +17,10 @@
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 
+#include "lib/allocator/page_arena.h"
 #include "lib/charset/ob_charset.h"
 #include "lib/lock/ob_bucket_lock.h"
+#include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
 
 namespace oceanbase
@@ -93,10 +95,21 @@ private:
 };
 
 class ObFTCacheRangeContainer;
+class ObIFTDict;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
+  ObFTDictHub()
+      : is_inited_(false),
+        dict_map_(),
+        rw_dict_lock_(),
+        shared_alloc_(lib::ObMemAttr("FtShrDict")),
+        shared_main_container_(shared_alloc_),
+        shared_quan_container_(shared_alloc_),
+        shared_dict_main_(nullptr),
+        shared_dict_quan_(nullptr)
+  {
+  }
   ~ObFTDictHub() {}
 
   int init();
@@ -107,7 +120,18 @@ public:
 
   int load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
 
+  // Returns a process-wide, immutable dict wrapper built once and reused by all
+  // parsers. The underlying cache entries stay pinned for the server lifetime.
+  // Safe because the built-in dictionaries never change at runtime
+  // (see ObDicLoader::check_need_load_dic / ObIKFTParser::should_read_newest_table).
+  int get_shared_dict(const ObFTDictDesc &desc, ObIFTDict *&dict);
+
 private:
+  // without holding rw_dict_lock_, for callers that already hold the bucket lock
+  int build_cache_nolock(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+
+  int load_cache_nolock(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+
   int get_dict_info(const ObFTDictInfoKey &key, ObFTDictInfo &info);
 
   int put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &info);
@@ -118,6 +142,12 @@ private:
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  // shared dict wrappers (ATOMIC_LOAD/STORE accessed; immutable after publish)
+  common::ObArenaAllocator shared_alloc_;
+  ObFTCacheRangeContainer shared_main_container_;
+  ObFTCacheRangeContainer shared_quan_container_;
+  ObIFTDict *shared_dict_main_;
+  ObIFTDict *shared_dict_quan_;
 };
 
 } //  namespace storage
