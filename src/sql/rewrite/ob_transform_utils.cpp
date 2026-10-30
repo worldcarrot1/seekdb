@@ -12804,6 +12804,119 @@ bool ObTransformUtils::is_full_group_by(ObSelectStmt& stmt, ObSQLMode mode)
   return !stmt.has_order_by() && is_only_full_group_by_on(mode);
 }
 
+static int check_expr_contains_match(const ObRawExpr *expr,
+                                     const ObRawExpr *match_expr,
+                                     bool &contains)
+{
+  int ret = OB_SUCCESS;
+  contains = false;
+  if (OB_ISNULL(expr) || OB_ISNULL(match_expr)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), KP(expr), KP(match_expr));
+  } else if (expr == match_expr) {
+    contains = true;
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && !contains && i < expr->get_param_count(); ++i) {
+      bool child_contains = false;
+      if (OB_FAIL(check_expr_contains_match(expr->get_param_expr(i), match_expr, child_contains))) {
+        LOG_WARN("failed to check child expr", K(ret));
+      } else {
+        contains = child_contains;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformUtils::check_need_calc_match_score(
+    ObExecContext *exec_ctx,
+    const ObDMLStmt *stmt,
+    ObRawExpr *match_against,
+    bool &need_calc,
+    ObIArray<ObExprConstraint> &constraints)
+{
+  int ret = OB_SUCCESS;
+  need_calc = true;
+  if (OB_ISNULL(exec_ctx) || OB_ISNULL(stmt) || OB_ISNULL(match_against)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret), KP(exec_ctx), KP(stmt), KP(match_against));
+  } else if (stmt::T_SELECT != stmt->get_stmt_type()) {
+    // DML statements keep the original behavior and always calculate relevance.
+  } else if (NULL != stmt->get_limit_expr() || stmt->get_order_items().count() > 0) {
+    // LIMIT may trigger implicit relevance ordering and topk pushdown on the text
+    // retrieval scan, and ORDER BY may use the match score as sort key: keep
+    // relevance calculation in all ordered or limited plans.
+  } else if (ObRawExpr::EXPR_MATCH_AGAINST != match_against->get_expr_class()
+      || static_cast<const ObMatchFunRawExpr *>(match_against)->is_es_match()
+      || ObMatchAgainstMode::NATURAL_LANGUAGE_MODE
+          != static_cast<const ObMatchFunRawExpr *>(match_against)->get_mode_flag()
+      || static_cast<const ObMatchFunRawExpr *>(match_against)->get_columns_boosts().count() > 0) {
+    // only plain natural language match without column boosts may skip scoring:
+    // boolean mode needs the full boolean compute tree and boosts change the
+    // score semantics on the retrieval path
+  } else {
+    const ObSelectStmt *select_stmt = static_cast<const ObSelectStmt *>(stmt);
+    bool contains_match = false;
+    for (int64_t i = 0; OB_SUCC(ret) && !contains_match && i < select_stmt->get_select_item_size(); ++i) {
+      if (OB_FAIL(check_expr_contains_match(select_stmt->get_select_item(i).expr_,
+                                            match_against,
+                                            contains_match))) {
+        LOG_WARN("failed to check select item expr", K(ret));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (contains_match) {
+      // the score itself is projected, relevance must be calculated
+    } else {
+      const ObIArray<ObRawExpr*> &having_exprs = select_stmt->get_having_exprs();
+      for (int64_t i = 0; OB_SUCC(ret) && !contains_match && i < having_exprs.count(); ++i) {
+        if (OB_FAIL(check_expr_contains_match(having_exprs.at(i), match_against, contains_match))) {
+          LOG_WARN("failed to check having expr", K(ret));
+        }
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (contains_match) {
+      // the score is used in having filter with non-boolean semantics
+    } else {
+      const ObIArray<ObRawExpr*> &group_exprs = select_stmt->get_group_exprs();
+      for (int64_t i = 0; OB_SUCC(ret) && !contains_match && i < group_exprs.count(); ++i) {
+        if (OB_FAIL(check_expr_contains_match(group_exprs.at(i), match_against, contains_match))) {
+          LOG_WARN("failed to check group by expr", K(ret));
+        }
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (contains_match) {
+      // keep relevance calculation when match is used as a group key
+    } else {
+      need_calc = false;
+      const ObIArray<ObRawExpr*> &conditions = stmt->get_condition_exprs();
+      for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < conditions.count(); ++i) {
+        const ObRawExpr *cond = conditions.at(i);
+        bool in_cond = false;
+        if (OB_FAIL(check_expr_contains_match(cond, match_against, in_cond))) {
+          LOG_WARN("failed to check condition expr", K(ret));
+        } else if (!in_cond) {
+          // the condition does not involve this match expression
+        } else {
+          bool tmp_need_calc = false;
+          if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                        const_cast<ObRawExpr *>(cond),
+                                                        match_against,
+                                                        tmp_need_calc,
+                                                        constraints))) {
+            LOG_WARN("failed to check need calc match score", K(ret));
+          } else if (tmp_need_calc) {
+            need_calc = true;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::inner_check_need_calc_match_score(ObExecContext *exec_ctx,
                                                         ObRawExpr* expr, 
                                                         ObRawExpr* match_expr, 

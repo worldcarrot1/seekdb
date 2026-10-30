@@ -2004,6 +2004,15 @@ public:
                                   ObSelectStmt *view_stmt,
                                   ObIArray<ObRawExpr *> &common_exprs,
                                   const ObIArray<ObRawExpr *> *extra_view_exprs = NULL);
+
+  // Checks whether the match_against score is actually needed by stmt, so that
+  // text retrieval plans can skip relevance calculation when MATCH is only used
+  // in boolean context (e.g. WHERE MATCH(...) AGAINST(...) without ORDER BY / LIMIT).
+  static int check_need_calc_match_score(ObExecContext *exec_ctx,
+                                         const ObDMLStmt *stmt,
+                                         ObRawExpr *match_against,
+                                         bool &need_calc,
+                                         ObIArray<ObExprConstraint> &constraints);
 private:
   static int is_scalar_expr(ObRawExpr* expr, bool &is_scalar);
 
