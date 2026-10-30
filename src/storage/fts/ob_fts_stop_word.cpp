@@ -219,14 +219,22 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
-  } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
+  } else if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
+    if (OB_HASH_EXIST != ret) {
+      // a real failure, keep it for the caller
     } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+      // the word was already seen: now the lookup is unavoidable, add this
+      // occurrence to the count that is stored under it
+      ret = OB_SUCCESS;
+      if (OB_FAIL(word_map_.get_refactored(word, word_count))) {
+        if (OB_HASH_NOT_EXIST == ret) {
+          // lost between the two calls, the word simply is new again
+          ret = word_map_.set_refactored(word, 1/*word count*/);
+        }
+      } else {
+        word_count += word_freq;
+        ret = word_map_.set_refactored(word, word_count, 1/*overwrite*/);
+      }
     }
   }
   return ret;
