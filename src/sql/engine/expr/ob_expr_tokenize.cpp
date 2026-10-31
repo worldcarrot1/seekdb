@@ -274,16 +274,34 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
 int ObExprTokenize::construct_ft_parser_inner_name(const ObString &input_str, TokenizeParam &param)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParser parser;
-
-  char *parser_name_buf = nullptr;
-  if (OB_ISNULL(parser_name_buf
-                = static_cast<char *>(param.allocator_.alloc(storage::OB_FT_PARSER_NAME_LENGTH)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(parser.init(input_str))) {
-  } else if (OB_FAIL(parser.serialize_to_str(parser_name_buf, storage::OB_FT_PARSER_NAME_LENGTH))) {
+  // The inner name is a pure function of the trimmed input and queries repeat
+  // a constant parser name row after row: one cached result per worker thread
+  // matched on the input bytes skips the arena copy, the parser init and the
+  // serialization on every hit.  A row whose name never validated (invalid)
+  // cannot be cached, so a hit always inherits a validated identical input.
+  thread_local common::ObSqlString tl_inner_name_key;
+  thread_local common::ObSqlString tl_inner_name;
+  thread_local bool tl_inner_name_valid = false;
+  if (tl_inner_name_valid
+      && 0 == tl_inner_name_key.string().compare(input_str)) {
+    param.parser_name_ = tl_inner_name.string();
   } else {
-    param.parser_name_ = ObString::make_string(parser_name_buf);
+    storage::ObFTParser parser;
+    char *parser_name_buf = nullptr;
+    if (OB_ISNULL(parser_name_buf
+                  = static_cast<char *>(param.allocator_.alloc(storage::OB_FT_PARSER_NAME_LENGTH)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else if (OB_FAIL(parser.init(input_str))) {
+    } else if (OB_FAIL(parser.serialize_to_str(parser_name_buf, storage::OB_FT_PARSER_NAME_LENGTH))) {
+    } else {
+      param.parser_name_ = ObString::make_string(parser_name_buf);
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(tl_inner_name_key.assign(input_str))) {
+      } else if (OB_TMP_FAIL(tl_inner_name.assign(param.parser_name_))) {
+      } else {
+        tl_inner_name_valid = true;
+      }
+    }
   }
   return ret;
 }
@@ -428,17 +446,41 @@ int ObExprTokenize::parse_parser_properties(const ObExpr &expr,
 int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &properties)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParserJsonProps parser_properties;
-
-  if (OB_FAIL(parser_properties.init())) {
-  } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
-  } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
-                                                             ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                                             true))) {
-  } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  // The reformed properties depend on nothing but (inner parser name, input
+  // properties): a row repeating the same pair — the two-argument form always
+  // does, with an empty input — aliases the one cached result per worker
+  // thread instead of paying a json parse, a rebuild and arena copies.  The
+  // cached string lives as long as the arena copy it replaces did.  The
+  // caller passes properties_ itself, which the reform overwrites below, so
+  // the key records a snapshot of the input bytes taken beforehand.
+  const ObString input_properties(properties);
+  thread_local common::ObSqlString tl_reform_name_key;
+  thread_local common::ObSqlString tl_reform_props_key;
+  thread_local common::ObSqlString tl_reform_value;
+  thread_local bool tl_reform_valid = false;
+  if (tl_reform_valid
+      && 0 == tl_reform_name_key.string().compare(parser_name_)
+      && 0 == tl_reform_props_key.string().compare(input_properties)) {
+    properties_ = tl_reform_value.string();
+  } else {
+    storage::ObFTParserJsonProps parser_properties;
+    if (OB_FAIL(parser_properties.init())) {
+    } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
+    } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
+                                                               ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                                               true))) {
+    } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+    } else {
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(tl_reform_name_key.assign(parser_name_))) {
+      } else if (OB_TMP_FAIL(tl_reform_props_key.assign(input_properties))) {
+      } else if (OB_TMP_FAIL(tl_reform_value.assign(properties_))) {
+      } else {
+        tl_reform_valid = true;
+      }
+    }
   }
-
   return ret;
 }
 
