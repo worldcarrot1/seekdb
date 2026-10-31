@@ -20,6 +20,7 @@
 #include "sql/das/iter/ob_das_text_retrieval_eval_node.h"
 #include "sql/das/iter/sparse_retrieval/ob_das_text_retrieval_engine.h"
 #include "sql/das/ob_das_ir_define.h"
+#include "lib/string/ob_sql_string.h"
 
 namespace oceanbase
 {
@@ -1121,7 +1122,42 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
 
     const ObObjMeta &meta = search_text->obj_meta_;
     int64_t doc_length = 0;
-    storage::ObFTParseHelper tokenize_helper;
+    // Keep one parse helper per worker thread: an execution whose parser name
+    // and properties match the cached config bytes reuses the parsed state and
+    // only retargets the transient segment() allocator to this execution's
+    // arena, sparing the per-execution construction of the helper plus the
+    // parse and free of the properties json.  Any mismatch rebuilds the helper
+    // in place before initializing it (parse_for_parser_helper only overwrites
+    // the fields its parser branch touches, so leftovers from a previous
+    // config must not survive), making a miss cost a little but never parse
+    // differently.  Failing to cache the config just forces a re-init next
+    // execution; it must not fail this one.
+    thread_local storage::ObFTParseHelper tl_parse_helper;
+    thread_local bool tl_parse_helper_inited = false;
+    thread_local common::ObSqlString tl_parse_helper_name;
+    thread_local common::ObSqlString tl_parse_helper_props;
+    storage::ObFTParseHelper &tokenize_helper = tl_parse_helper;
+    if (tl_parse_helper_inited
+        && 0 == tl_parse_helper_name.string().compare(parser_name)
+        && 0 == tl_parse_helper_props.string().compare(parser_properties)) {
+      tokenize_helper.set_allocator(&alloc);
+    } else {
+      tokenize_helper.~ObFTParseHelper();
+      new (&tokenize_helper) storage::ObFTParseHelper();
+      if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
+        tl_parse_helper_inited = false;
+      } else {
+        tl_parse_helper_inited = true;
+        int tmp_ret = OB_SUCCESS;
+        if (OB_TMP_FAIL(tl_parse_helper_name.assign(parser_name))) {
+          LOG_WARN("failed to cache parser name", K(tmp_ret));
+          tl_parse_helper_inited = false;
+        } else if (OB_TMP_FAIL(tl_parse_helper_props.assign(parser_properties))) {
+          LOG_WARN("failed to cache parser properties", K(tmp_ret));
+          tl_parse_helper_inited = false;
+        }
+      }
+    }
     // One word map per worker thread instead of creating and destroying one
     // per execution: segment() clears it before filling it anyway, and the
     // map nodes belong to the map itself (not to the reset-prone arena), so
@@ -1130,7 +1166,7 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
     thread_local storage::ObFTWordMap tl_token_map;
     thread_local bool tl_token_map_created = false;
     storage::ObFTWordMap &token_map = tl_token_map;
-    if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
+    if (OB_FAIL(ret)) {
     } else if (OB_UNLIKELY(!tl_token_map_created
                            && OB_FAIL(token_map.create(127, common::ObMemAttr("FTWordMap"))))) {
     } else if (FALSE_IT(tl_token_map_created = true)) {

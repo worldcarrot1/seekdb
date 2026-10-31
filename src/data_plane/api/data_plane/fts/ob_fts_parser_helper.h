@@ -204,6 +204,12 @@ public:
 
   void reset();
 
+  /**
+   * Retarget the transient allocator segment() copies tokens from, for callers
+   * that keep this helper alive across executions of a same parser config.
+   */
+  void set_allocator(common::ObIAllocator *allocator) { allocator_ = allocator; }
+
   TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited));
 
 private:
