@@ -662,7 +662,9 @@ int ObDASLegacyTRMergeIter::gen_inv_idx_scan_default_range(const ObString &query
   } else if (OB_ISNULL(obj_ptr = new (buf) ObObj[obj_cnt])) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(ob_write_obj(ctx_alloc, tmp_obj, obj_ptr[0]))) {
-  } else if (OB_FAIL(ob_write_obj(ctx_alloc, tmp_obj, obj_ptr[2]))) {
+  } else if (FALSE_IT(obj_ptr[2] = obj_ptr[0])) {
+    // The range end shares the start's arena deep copy: both rowkeys are only
+    // read after this point, so the second ob_write_obj copied nothing new.
   } else {
     obj_ptr[1].set_min_value();
     obj_ptr[3].set_max_value();
@@ -1120,11 +1122,18 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
     const ObObjMeta &meta = search_text->obj_meta_;
     int64_t doc_length = 0;
     storage::ObFTParseHelper tokenize_helper;
-    common::ObSEArray<ObFTWord, 16> tokens;
-    storage::ObFTWordMap token_map;
-    const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
+    // One word map per worker thread instead of creating and destroying one
+    // per execution: segment() clears it before filling it anyway, and the
+    // map nodes belong to the map itself (not to the reset-prone arena), so
+    // no entry survives long enough to dangle.  127 buckets covers any real
+    // query's token count with short chains.
+    thread_local storage::ObFTWordMap tl_token_map;
+    thread_local bool tl_token_map_created = false;
+    storage::ObFTWordMap &token_map = tl_token_map;
     if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
-    } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+    } else if (OB_UNLIKELY(!tl_token_map_created
+                           && OB_FAIL(token_map.create(127, common::ObMemAttr("FTWordMap"))))) {
+    } else if (FALSE_IT(tl_token_map_created = true)) {
     } else if (OB_FAIL(tokenize_helper.segment(
                            meta,
                            search_text_string.ptr(),
