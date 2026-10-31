@@ -20,6 +20,7 @@
 #include "lib/allocator/page_arena.h"
 #include "lib/hash/ob_hashmap.h"
 #include "lib/utility/ob_macro_utils.h"
+#include "lib/utility/ob_sort.h"
 #include "storage/fts/ik/ob_ik_token.h"
 
 namespace oceanbase
@@ -42,6 +43,10 @@ private:
   int prepare(TokenizeContext &ctx);
 
   int add_chain(ObIKTokenChain *chain);
+
+  int record_chain_start(int64_t offset);
+
+  int lookup_chain(int64_t current, ObIKTokenChain *&chain);
 
   int optimize(TokenizeContext &ctx,
                ObIKTokenChain *option,
@@ -78,6 +83,12 @@ private:
                           IKChainNodeAlloc> chains_;
   bool chains_created_;
   int64_t chains_bucket_num_;
+  // Offsets recorded by add_chain, i.e. exactly the keys of chains_, kept in
+  // an arena backed array and sorted once before output_result walks them.
+  int64_t *chain_starts_;
+  int64_t chain_start_cnt_;
+  int64_t chain_start_cap_;
+  int64_t chain_start_pos_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);

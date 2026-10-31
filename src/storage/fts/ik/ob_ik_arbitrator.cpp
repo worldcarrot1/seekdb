@@ -113,6 +113,13 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
 
   int64_t char_len = 0;
   ObIKTokenChain *chain = nullptr;
+  // add_chain has recorded every key of chains_ by now, and the loop below
+  // only ever moves `current` forward, so one sorted array plus one cursor
+  // answers "does a chain start here" without touching the hash buckets.
+  if (chain_start_cnt_ > 1) {
+    lib::ob_sort(chain_starts_, chain_starts_ + chain_start_cnt_);
+  }
+  chain_start_pos_ = 0;
   for (int64_t current = 0; OB_SUCC(ret) && current < ctx.fulltext_len();) {
     ObFTCharUtil::CharType type;
     // maybe not so good to keep single, check it later
@@ -126,7 +133,7 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
                                                          type))) {
     } else if (ObFTCharUtil::CharType::USELESS == type) {
       current += char_len; // skip useless char
-    } else if (OB_FAIL(chains_.get_refactored(current, chain)) && OB_HASH_NOT_EXIST != ret) {
+    } else if (OB_FAIL(lookup_chain(current, chain)) && OB_HASH_NOT_EXIST != ret) {
     } else if (OB_HASH_NOT_EXIST == ret) {
       ret = OB_SUCCESS;
       if (!keep_single()) {
@@ -328,13 +335,24 @@ int ObIKArbitrator::prepare(TokenizeContext &ctx)
     chains_bucket_num_ = cal_bucket_num;
     alloc_.reset();
   }
+  if (OB_SUCC(ret)) {
+    // Both branches above dropped the arena blocks the starts array lives in.
+    chain_starts_ = nullptr;
+    chain_start_cnt_ = 0;
+    chain_start_cap_ = 0;
+    chain_start_pos_ = 0;
+  }
   return ret;
 }
 
 ObIKArbitrator::ObIKArbitrator()
   : alloc_(lib::ObMemAttr("IK Arbitrator")),
     chains_created_(false),
-    chains_bucket_num_(0)
+    chains_bucket_num_(0),
+    chain_starts_(nullptr),
+    chain_start_cnt_(0),
+    chain_start_cap_(0),
+    chain_start_pos_(0)
 {
 }
 
@@ -346,6 +364,49 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
   } else if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+  } else if (OB_FAIL(record_chain_start(chain->min_offset()))) {
+  }
+  return ret;
+}
+
+int ObIKArbitrator::record_chain_start(int64_t offset)
+{
+  int ret = OB_SUCCESS;
+  if (chain_start_cnt_ == chain_start_cap_) {
+    const int64_t new_cap = chain_start_cap_ > 0 ? chain_start_cap_ * 2 : 16;
+    void *buf = alloc_.alloc(new_cap * sizeof(int64_t));
+    if (OB_ISNULL(buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("alloc chain start array failed", K(ret), K(new_cap));
+    } else {
+      int64_t *starts = static_cast<int64_t *>(buf);
+      for (int64_t i = 0; i < chain_start_cnt_; ++i) {
+        starts[i] = chain_starts_[i];
+      }
+      chain_starts_ = starts;
+      chain_start_cap_ = new_cap;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    chain_starts_[chain_start_cnt_++] = offset;
+  }
+  return ret;
+}
+
+int ObIKArbitrator::lookup_chain(int64_t current, ObIKTokenChain *&chain)
+{
+  int ret = OB_SUCCESS;
+  // output_result's `current` is monotone, so the cursor never rewinds.
+  while (chain_start_pos_ < chain_start_cnt_
+         && chain_starts_[chain_start_pos_] < current) {
+    ++chain_start_pos_;
+  }
+  if (chain_start_pos_ >= chain_start_cnt_
+      || chain_starts_[chain_start_pos_] > current) {
+    ret = OB_HASH_NOT_EXIST;
+  } else if (OB_FAIL(chains_.get_refactored(current, chain))) {
+    // Every recorded offset is a real key, so a miss here means the map lost
+    // an entry; the caller already treats NOT_EXIST as "no chain here".
   }
   return ret;
 }
