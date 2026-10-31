@@ -24,6 +24,7 @@
 #include "lib/ob_errno.h"
 #include "lib/oblog/ob_log_module.h"
 #include "lib/string/ob_string.h"
+#include "lib/string/ob_sql_string.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "object/ob_object.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -81,15 +82,69 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
                                       ObIJsonBase *&result)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParseHelper tokenize_helper;
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
-  storage::ObFTWordMap token_map;
+  // One parse helper per worker thread, keyed on the config bytes: a row with
+  // the same parser name and (already reformed) properties reuses the parsed
+  // state and only retargets the segment()/json allocator to this row.  Any
+  // mismatch rebuilds the helper in place first, since parse_for_parser_helper
+  // only overwrites the fields its parser branch touches.  A failed config
+  // cache copy only forces a re-init on the next row.
+  thread_local storage::ObFTParseHelper tl_parse_helper;
+  thread_local bool tl_parse_helper_inited = false;
+  thread_local common::ObSqlString tl_parse_helper_name;
+  thread_local common::ObSqlString tl_parse_helper_props;
+  // And one word map per worker thread.  make_*_json walks the map and the
+  // bucket order lands in the json array, so the table may only be kept when
+  // this row computes the same bucket count it was created with: equal
+  // capacity means reuse() leaves exactly the visit order a fresh table of
+  // the same size would have.  A different count recreates it.
+  thread_local storage::ObFTWordMap tl_token_map;
+  thread_local int64_t tl_token_map_bkt = -1;
+  storage::ObFTParseHelper &tokenize_helper = tl_parse_helper;
+  storage::ObFTWordMap &token_map = tl_token_map;
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
-  } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+  } else if (tl_parse_helper_inited
+             && 0 == tl_parse_helper_name.string().compare(param.parser_name_)
+             && 0 == tl_parse_helper_props.string().compare(param.properties_)) {
+    tokenize_helper.set_allocator(&allocator);
+  } else {
+    tokenize_helper.~ObFTParseHelper();
+    new (&tokenize_helper) storage::ObFTParseHelper();
+    if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
+      tl_parse_helper_inited = false;
+    } else {
+      tl_parse_helper_inited = true;
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(tl_parse_helper_name.assign(param.parser_name_))) {
+        LOG_WARN("failed to cache parser name", K(tmp_ret));
+        tl_parse_helper_inited = false;
+      } else if (OB_TMP_FAIL(tl_parse_helper_props.assign(param.properties_))) {
+        LOG_WARN("failed to cache parser properties", K(tmp_ret));
+        tl_parse_helper_inited = false;
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (tl_token_map.created() && tl_token_map_bkt == ft_word_bkt_cnt) {
+    if (OB_FAIL(token_map.reuse())) {
+      LOG_WARN("failed to reuse token map", K(ret));
+    }
+  } else {
+    if (tl_token_map.created()) {
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(token_map.destroy())) {
+        LOG_WARN("failed to destroy previous token map", K(tmp_ret));
+      }
+    }
+    if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+    } else {
+      tl_token_map_bkt = ft_word_bkt_cnt;
+    }
+  }
+  if (OB_FAIL(ret)) {
   } else if (
       (0 != param.fulltext_.length())
       && OB_FAIL(tokenize_helper.segment(
