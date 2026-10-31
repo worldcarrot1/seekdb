@@ -2351,8 +2351,12 @@ int ObLogTableScan::extract_text_retrieval_access_expr(ObTextRetrievalInfo &tr_i
       OB_ISNULL(tr_info.related_doc_cnt_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(exprs.push_back(tr_info.token_column_))) {
-  } else if (OB_FAIL(exprs.push_back(tr_info.token_cnt_column_))) {
   } else if (OB_FAIL(exprs.push_back(tr_info.docid_or_rowkey_column_))) {
+  } else if (!tr_info.need_calc_relevance_) {
+    // Boolean-only retrieval never reads the two bm25 stat columns, so they
+    // leave the inverted index's access list entirely: the scan now decodes
+    // (word, doc_id) per posting row instead of four columns.
+  } else if (OB_FAIL(exprs.push_back(tr_info.token_cnt_column_))) {
   } else if (OB_FAIL(exprs.push_back(tr_info.doc_length_column_))) {
   } else if (OB_FAIL(exprs.push_back(tr_info.total_doc_cnt_->get_param_expr(0)))) {
   } else if (OB_FAIL(exprs.push_back(tr_info.related_doc_cnt_->get_param_expr(0)))) {
